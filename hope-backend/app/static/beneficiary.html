@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Hope – Beneficiary Payout Test</title>
+  <meta name="description" content="Sandbox test page for sending a PayPal payout from the Hope merchant account to a beneficiary." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/style.css" />
+</head>
+<body>
+  <main class="card">
+    <div class="brand"><span class="brand-dot"></span>Hope</div>
+    <h1>Beneficiary Payout Test</h1>
+    <p class="sub">Send a PayPal Sandbox payout from the Hope merchant account to a beneficiary. No real money is moved.</p>
+
+    <form id="payout-form" novalidate>
+      <label for="name" class="label">Beneficiary name</label>
+      <input id="name" class="text-input" type="text" maxlength="100" autocomplete="off" required />
+
+      <label for="email" class="label spaced">PayPal recipient email</label>
+      <input id="email" class="text-input" type="email" maxlength="127" autocomplete="off" required />
+
+      <label for="amount" class="label spaced">Amount (USD)</label>
+      <div class="amount-wrap">
+        <span class="currency">$</span>
+        <input id="amount" type="number" inputmode="decimal" min="0.01" step="0.01" value="1.00" />
+      </div>
+      <p id="form-error" class="field-error" role="alert" hidden></p>
+
+      <button id="submit-btn" type="submit" class="btn">Request Payout</button>
+    </form>
+
+    <section id="status" class="status" aria-live="polite" hidden>
+      <div id="status-spinner" class="spinner" hidden></div>
+      <div id="status-title" class="status-title"></div>
+      <div id="status-body" class="status-body"></div>
+    </section>
+  </main>
+
+  <script src="/static/js/beneficiary.js"></script>
+</body>
+</html>
