@@ -21,7 +21,8 @@ export function CampaignDetails({ refreshTrigger = 0 }: CampaignDetailsProps) {
     };
   }, [refreshTrigger]);
 
-  const raised = summary ? Number(summary.total_raised) : null;
+  const rawRaised = summary ? Number(summary.total_raised) : null;
+  const raised = rawRaised !== null && !isNaN(rawRaised) ? rawRaised : null;
 
   return (
     <div className="campaign-card">
