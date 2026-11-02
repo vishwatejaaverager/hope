@@ -17,6 +17,8 @@ app = FastAPI(title="Hope Backend")
 allowed_origins = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
     "https://hope-9dq5.onrender.com",
 ]
 if DASHBOARD_URL and DASHBOARD_URL not in allowed_origins:
@@ -38,11 +40,6 @@ app.include_router(payout.router)
 @app.get("/")
 def root():
     return {"status": "ok", "app": "Hope"}
-
-
-@app.get("/donate", include_in_schema=False)
-def donate_page():
-    return FileResponse(STATIC_DIR / "index.html")
 
 
 @app.get("/beneficiary", include_in_schema=False)

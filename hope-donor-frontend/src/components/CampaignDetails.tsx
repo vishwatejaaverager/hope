@@ -1,19 +1,25 @@
 import { useEffect, useState } from "react";
 import { getDonationSummary, type DonationSummary } from "../services/api";
 
-export function CampaignDetails() {
+interface CampaignDetailsProps {
+  refreshTrigger?: number;
+}
+
+export function CampaignDetails({ refreshTrigger = 0 }: CampaignDetailsProps) {
   const [summary, setSummary] = useState<DonationSummary | null>(null);
+  const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     let active = true;
     getDonationSummary()
       .then((s) => active && setSummary(s))
-      .catch(() => active && setFailed(true));
+      .catch(() => active && setFailed(true))
+      .finally(() => active && setLoading(false));
     return () => {
       active = false;
     };
-  }, []);
+  }, [refreshTrigger]);
 
   const raised = summary ? Number(summary.total_raised) : null;
 
@@ -31,21 +37,35 @@ export function CampaignDetails() {
         is moved.
       </p>
 
-      <div className="progress-section">
-        <div className="progress-header">
-          <div className="amount-raised">
-            {raised === null ? (failed ? "—" : "…") : `$${raised.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+      <div className="progress-section" aria-busy={loading}>
+        {loading ? (
+          <div className="skeleton-wrap" role="status" aria-label="Loading donation totals">
+            <div className="skeleton skeleton-amount" />
+            <div className="skeleton skeleton-line" />
+            <span className="skeleton-caption">
+              <span className="spinner-ring" /> Fetching live totals…
+            </span>
           </div>
-          <div className="amount-goal">raised so far</div>
-        </div>
+        ) : (
+          <>
+            <div className="progress-header">
+              <div className="amount-raised">
+                {raised === null
+                  ? "—"
+                  : `$${raised.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+              </div>
+              <div className="amount-goal">raised so far</div>
+            </div>
 
-        <div className="progress-stats">
-          <span className="stat-item">
-            <strong>{summary ? summary.donation_count : failed ? "—" : "…"}</strong>{" "}
-            {summary?.donation_count === 1 ? "donation" : "donations"} received
-          </span>
-        </div>
-        {failed && <p className="status-detail-text">Live totals are unavailable right now.</p>}
+            <div className="progress-stats">
+              <span className="stat-item">
+                <strong>{summary ? summary.donation_count : "—"}</strong>{" "}
+                {summary?.donation_count === 1 ? "donation" : "donations"} received
+              </span>
+            </div>
+            {failed && <p className="status-detail-text">Live totals are unavailable right now.</p>}
+          </>
+        )}
       </div>
     </div>
   );

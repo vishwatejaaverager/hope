@@ -12,7 +12,11 @@ interface StatusState {
   loading?: boolean;
 }
 
-export function DonationForm() {
+interface DonationFormProps {
+  onPaymentSuccess?: (result: CaptureOrderResponse) => void;
+}
+
+export function DonationForm({ onPaymentSuccess }: DonationFormProps) {
   const [amount, setAmount] = useState<string>("5");
   const [completedPayment, setCompletedPayment] = useState<CaptureOrderResponse | null>(null);
   const [status, setStatus] = useState<StatusState>({
@@ -72,6 +76,7 @@ export function DonationForm() {
 
   function handleSuccess(result: CaptureOrderResponse) {
     setCompletedPayment(result);
+    onPaymentSuccess?.(result);
   }
 
   function handleReset() {

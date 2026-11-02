@@ -71,6 +71,14 @@ class DonationRecord(BaseModel):
     updated_at: datetime
 
 
+class DonationSummaryResponse(BaseModel):
+    """Public aggregate of completed donations (no donor details)."""
+
+    total_raised: str
+    donation_count: int
+    currency: str = "USD"
+
+
 class DonationHistoryResponse(BaseModel):
     count: int
     limit: int

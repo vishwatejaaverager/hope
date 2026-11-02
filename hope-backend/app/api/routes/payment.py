@@ -15,6 +15,7 @@ from app.schemas.payment import (
     CreateOrderResponse,
     DonationHistoryResponse,
     DonationRecord,
+    DonationSummaryResponse,
 )
 from app.services import paypal_service
 from app.services.paypal_service import PayPalError
@@ -31,6 +32,21 @@ def config():
         return {"client_id": paypal_service.get_client_id(), "currency": "USD"}
     except PayPalError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message)
+
+
+@router.get("/summary", response_model=DonationSummaryResponse)
+def donation_summary(db: Session = Depends(get_db)):
+    """Public totals of completed donations. Aggregates only; no donor details."""
+    try:
+        total, count = db.execute(
+            select(func.coalesce(func.sum(Donation.amount), 0), func.count()).where(
+                Donation.payment_status == "COMPLETED", Donation.currency == "USD"
+            )
+        ).one()
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Database error. Please try again.")
+    return DonationSummaryResponse(total_raised=f"{Decimal(total):.2f}", donation_count=int(count))
 
 
 @router.get("/history", response_model=DonationHistoryResponse)

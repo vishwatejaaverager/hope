@@ -1,7 +1,24 @@
+import { useState } from "react";
 import { CampaignDetails } from "./components/CampaignDetails";
 import { DonationForm } from "./components/DonationForm";
+import { PaymentSuccessModal } from "./components/PaymentSuccessModal";
+import type { CaptureOrderResponse } from "./services/api";
 
 export default function App() {
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
+  const [successPayment, setSuccessPayment] = useState<CaptureOrderResponse | null>(null);
+
+  function handlePaymentSuccess(result: CaptureOrderResponse) {
+    // 1. Immediately increment trigger so CampaignDetails re-fetches the live donation count
+    setRefreshTrigger((prev) => prev + 1);
+    // 2. Open the celebratory success dialog with animations
+    setSuccessPayment(result);
+  }
+
+  function handleCloseModal() {
+    setSuccessPayment(null);
+  }
+
   return (
     <>
       <header className="app-header">
@@ -20,9 +37,14 @@ export default function App() {
       </header>
 
       <main className="main-container">
-        <CampaignDetails />
-        <DonationForm />
+        <CampaignDetails refreshTrigger={refreshTrigger} />
+        <DonationForm onPaymentSuccess={handlePaymentSuccess} />
       </main>
+
+      {/* Cool Celebration Payment Status Dialog */}
+      {successPayment && (
+        <PaymentSuccessModal payment={successPayment} onClose={handleCloseModal} />
+      )}
 
       <footer className="app-footer">
         <p>
