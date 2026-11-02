@@ -6,6 +6,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app.api.routes.auth import require_admin_session
 from app.db import get_db
 from app.models import Donation
 from app.schemas.payment import (
@@ -37,6 +38,7 @@ def donation_history(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
+    _session: dict = Depends(require_admin_session),
 ):
     try:
         total = db.execute(select(func.count()).select_from(Donation)).scalar_one()

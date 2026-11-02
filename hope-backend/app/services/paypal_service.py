@@ -176,3 +176,49 @@ def get_payout(batch_id: str) -> dict:
     if not response.ok:
         raise _error_from_response(response)
     return response.json()
+
+
+def exchange_authorization_code(code: str, redirect_uri: str) -> dict:
+    """Exchange OAuth 2.0 authorization code for user access token."""
+    if not CLIENT_ID or not CLIENT_SECRET:
+        raise PayPalError("PayPal credentials are missing from .env", 500)
+
+    try:
+        response = requests.post(
+            f"{PAYPAL_BASE_URL}/v1/oauth2/token",
+            auth=(CLIENT_ID, CLIENT_SECRET),
+            headers={"Accept": "application/json"},
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": redirect_uri,
+            },
+            timeout=TIMEOUT,
+        )
+    except requests.RequestException:
+        raise PayPalError("Could not reach PayPal token service. Please try again.", 502)
+
+    if not response.ok:
+        raise _error_from_response(response)
+    return response.json()
+
+
+def get_user_info(user_access_token: str) -> dict:
+    """Fetch authenticated user / merchant identity from OpenID Connect UserInfo endpoint."""
+    try:
+        response = requests.get(
+            f"{PAYPAL_BASE_URL}/v1/identity/oauth2/userinfo",
+            params={"schema": "openid"},
+            headers={
+                "Authorization": f"Bearer {user_access_token}",
+                "Content-Type": "application/json",
+            },
+            timeout=TIMEOUT,
+        )
+    except requests.RequestException:
+        raise PayPalError("Could not reach PayPal user info service. Please try again.", 502)
+
+    if not response.ok:
+        raise _error_from_response(response)
+    return response.json()
+

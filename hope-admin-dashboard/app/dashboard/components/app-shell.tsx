@@ -1,11 +1,8 @@
 'use client';
 
-import type { ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { BellIcon, HelpIcon } from './ui/icons';
 import { AgStudioLogo } from './ui/logo';
-
-// The app frame, laid out like the PayPal Developer Dashboard: a white top bar, a left sidebar
-// and a light canvas. Shared by the dashboard, its loading skeleton and its error page.
 
 function HopeWordmark({ className = '' }: { className?: string }) {
   return (
@@ -41,22 +38,73 @@ function BrandLockup() {
 }
 
 function TopBar() {
+  const [merchant, setMerchant] = useState<{ email?: string; name?: string; merchant_id?: string } | null>(null);
+
+  useEffect(() => {
+    // Fetch merchant details from session
+    fetch("/api/auth/me")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.authenticated) setMerchant(data);
+      })
+      .catch(() => {});
+  }, []);
+
+  async function handleLogout() {
+    try {
+      await fetch("/api/auth/logout", {
+        method: "POST",
+      });
+    } catch {}
+    window.location.href = "/login";
+  }
+
+  const initials = merchant?.name
+    ? merchant.name
+        .split(" ")
+        .map((n) => n[0])
+        .join("")
+        .slice(0, 2)
+        .toUpperCase()
+    : "HA";
+
   return (
     <header className="flex h-16 shrink-0 items-center gap-6 border-b border-pp-border bg-white px-6">
       <BrandLockup />
-      <div className="ml-auto flex items-center gap-1 text-pp-navy">
-        <span className="inline-flex size-9 items-center justify-center rounded-full" title="Help">
+      <div className="ml-auto flex items-center gap-3 text-pp-navy">
+        <span className="inline-flex size-9 items-center justify-center rounded-full text-slate-400 hover:text-slate-600 cursor-pointer" title="Help">
           <HelpIcon />
         </span>
-        <span className="inline-flex size-9 items-center justify-center rounded-full" title="Notifications">
+        <span className="inline-flex size-9 items-center justify-center rounded-full text-slate-400 hover:text-slate-600 cursor-pointer" title="Notifications">
           <BellIcon />
         </span>
-        <span className="ml-2 flex items-center gap-2">
-          <span className="flex size-9 items-center justify-center rounded-full bg-indigo-600 text-sm font-semibold text-white">
-            HA
-          </span>
-          <span className="hidden text-sm font-semibold sm:inline">Hope Admin</span>
-        </span>
+
+        {/* Merchant Identity Profile */}
+        <div className="ml-2 flex items-center gap-3 pl-3 border-l border-slate-200">
+          <div className="flex items-center gap-2">
+            <span className="flex size-9 items-center justify-center rounded-full bg-gradient-to-tr from-indigo-600 to-indigo-800 text-xs font-bold text-white shadow-sm">
+              {initials}
+            </span>
+            <div className="hidden sm:flex flex-col text-left">
+              <span className="text-xs font-bold text-slate-800 leading-tight">
+                {merchant?.name || "Hope Merchant"}
+              </span>
+              <span className="text-[10px] text-slate-500 leading-tight font-mono">
+                {merchant?.merchant_id ? `ID: ${merchant.merchant_id}` : merchant?.email || "Authorized"}
+              </span>
+            </div>
+          </div>
+
+          {/* Logout Button */}
+          <button
+            id="admin-logout-btn"
+            onClick={handleLogout}
+            className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 shadow-xs hover:bg-slate-50 hover:text-red-600 hover:border-red-200 transition-colors cursor-pointer"
+            title="Sign out of Admin Dashboard"
+          >
+            Sign Out
+          </button>
+        </div>
       </div>
     </header>
   );

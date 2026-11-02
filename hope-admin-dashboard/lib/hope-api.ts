@@ -47,18 +47,36 @@ export interface PayoutHistoryResponse {
   items: PayoutRecord[];
 }
 
+import { cookies } from "next/headers";
+
 const BACKEND_URL =
   process.env.HOPE_BACKEND_URL?.replace(/\/$/, "") ||
   "https://hope-9dq5.onrender.com";
 
+async function getAuthHeaders(): Promise<Record<string, string>> {
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+  };
+  try {
+    const cookieStore = await cookies();
+    const sessionCookie = cookieStore.get("hope_admin_session");
+    if (sessionCookie?.value) {
+      headers["Cookie"] = `hope_admin_session=${sessionCookie.value}`;
+      headers["Authorization"] = `Bearer ${sessionCookie.value}`;
+    }
+  } catch {
+    // cookies() unavailable outside request context (e.g. build time)
+  }
+  return headers;
+}
+
 async function fetchFromBackend<T>(path: string): Promise<T> {
   const url = `${BACKEND_URL}${path}`;
+  const headers = await getAuthHeaders();
   try {
     const res = await fetch(url, {
       cache: "no-store",
-      headers: {
-        Accept: "application/json",
-      },
+      headers,
     });
     if (!res.ok) {
       const errText = await res.text().catch(() => "");
@@ -71,7 +89,7 @@ async function fetchFromBackend<T>(path: string): Promise<T> {
       try {
         const localRes = await fetch(`http://127.0.0.1:8000${path}`, {
           cache: "no-store",
-          headers: { Accept: "application/json" },
+          headers,
         });
         if (localRes.ok) {
           return (await localRes.json()) as T;

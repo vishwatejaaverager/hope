@@ -8,6 +8,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.api.routes.auth import require_admin_session
 from app.db import Base, get_db
 from app.main import app
 from app.models import Payout
@@ -48,6 +49,7 @@ def client(db_session):
             pass
 
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[require_admin_session] = lambda: {"sub": "TEST_MERCHANT"}
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
