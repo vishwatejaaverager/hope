@@ -1,7 +1,8 @@
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Optional
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 
 SUPPORTED_CURRENCIES = {"USD"}  # Sandbox testing; INR returned CURRENCY_NOT_SUPPORTED
 MIN_AMOUNT = Decimal("1.00")
@@ -50,3 +51,28 @@ class CaptureOrderResponse(BaseModel):
     currency: Optional[str] = None
     success: bool
     message: str
+
+
+class DonationRecord(BaseModel):
+    """A persisted donation (database row)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    donor_name: Optional[str] = None
+    donor_email: Optional[str] = None
+    amount: Decimal
+    currency: str
+    payment_provider: str
+    paypal_order_id: str
+    paypal_capture_id: Optional[str] = None
+    payment_status: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class DonationHistoryResponse(BaseModel):
+    count: int
+    limit: int
+    offset: int
+    items: list[DonationRecord]

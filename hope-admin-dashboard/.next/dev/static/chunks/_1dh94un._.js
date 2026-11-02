@@ -1,0 +1,5 @@
+(globalThis["TURBOPACK_CHUNK_LISTS"] || (globalThis["TURBOPACK_CHUNK_LISTS"] = [])).push({
+    script: typeof document === "object" ? document.currentScript : undefined,
+    chunks: ["static/chunks/[root-of-the-server]__1y0z6we._.css","static/chunks/node_modules_next_dist_20wefz_._.js","static/chunks/_11242y0._.js","static/chunks/_0j1okf-._.js","static/chunks/app_dashboard_0d5-418._.js","static/chunks/node_modules_ag-stack_dist_package_main_esm_mjs_15-q3vd._.js","static/chunks/node_modules_ag-grid-community_dist_package_main_esm_mjs_1yimx0_._.js","static/chunks/node_modules_ag-grid-enterprise_dist_package_main_esm_mjs_1nq9lzi._.js","static/chunks/node_modules_ag-charts-core_dist_package_main_esm_mjs_0vww0ha._.js","static/chunks/node_modules_ag-charts-community_dist_package_main_esm_mjs_20juvah._.js","static/chunks/node_modules_ag-charts-enterprise_dist_package_main_esm_mjs_1xyc-5m._.js","static/chunks/node_modules_ag-studio_dist_package_main_esm_mjs_0d11uw1._.js","static/chunks/node_modules_ag-grid-react_dist_package_index_esm_mjs_17lfr5c._.js","static/chunks/node_modules_1cx5fku._.js"],
+    source: "entry"
+});

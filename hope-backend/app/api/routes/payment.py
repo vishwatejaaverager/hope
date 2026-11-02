@@ -1,14 +1,20 @@
 import re
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models import Donation
-from app.schemas.payment import CaptureOrderResponse, CreateOrderRequest, CreateOrderResponse
+from app.schemas.payment import (
+    CaptureOrderResponse,
+    CreateOrderRequest,
+    CreateOrderResponse,
+    DonationHistoryResponse,
+    DonationRecord,
+)
 from app.services import paypal_service
 from app.services.paypal_service import PayPalError
 
@@ -24,6 +30,28 @@ def config():
         return {"client_id": paypal_service.get_client_id(), "currency": "USD"}
     except PayPalError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message)
+
+
+@router.get("/history", response_model=DonationHistoryResponse)
+def donation_history(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    try:
+        total = db.execute(select(func.count()).select_from(Donation)).scalar_one()
+        rows = db.execute(
+            select(Donation).order_by(Donation.created_at.desc(), Donation.id.desc()).limit(limit).offset(offset)
+        ).scalars().all()
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Database error. Please try again.")
+    return DonationHistoryResponse(
+        count=total,
+        limit=limit,
+        offset=offset,
+        items=[DonationRecord.model_validate(r) for r in rows],
+    )
 
 
 @router.post("/create-order", response_model=CreateOrderResponse)
