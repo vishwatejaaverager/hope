@@ -43,6 +43,7 @@ function loadPayPalSdk(clientId: string, currency = "USD"): Promise<string> {
 
       script.onerror = () => {
         sdkLoadPromise = null;
+        script.remove();
         reject(new Error("Could not load the PayPal SDK. Check your network or credentials."));
       };
 
@@ -96,7 +97,6 @@ export function PayPalButton({
         if (!isMounted) return;
         const msg = err instanceof Error ? err.message : "Failed to initialize PayPal";
         setLoadError(msg);
-        onStatusChangeRef.current("failure", "Checkout unavailable", msg, false);
       }
     }
 

@@ -19,6 +19,12 @@ export interface CaptureOrderResponse {
   message: string;
 }
 
+export interface DonationSummary {
+  total_raised: string;
+  donation_count: number;
+  currency: string;
+}
+
 export interface ApiError {
   detail?: string | Array<{ msg: string }>;
 }
@@ -43,6 +49,11 @@ async function handleResponse<T>(res: Response): Promise<T> {
   }
 
   return data as T;
+}
+
+export async function getDonationSummary(): Promise<DonationSummary> {
+  const res = await fetch("/api/payments/summary");
+  return handleResponse<DonationSummary>(res);
 }
 
 export async function getPaymentConfig(): Promise<PaymentConfig> {
