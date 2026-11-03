@@ -1,4 +1,5 @@
 import logging
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -7,10 +8,17 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.core.security import verify_webhook_secret
+from app.core.security import verify_session_token, verify_webhook_secret
 from app.db import get_db
-from app.models import IncomingEmail
-from app.schemas.email import IncomingEmailPayload, IncomingEmailResponse
+from app.models import IncomingEmail, OutgoingEmail
+from app.schemas.email import (
+    IncomingEmailPayload,
+    IncomingEmailResponse,
+    OutgoingEmailListItem,
+    OutgoingEmailPayload,
+    OutgoingEmailResponse,
+    UpdateOutgoingEmailStatusPayload,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +78,42 @@ def _extract_provided_secret(
             return request.headers[key]
 
     return None
+
+
+def _authenticate_request(
+    request: Request,
+    payload_secret: Optional[str] = None,
+    header_secret: Optional[str] = None,
+    zapier_secret: Optional[str] = None,
+    auth_header: Optional[str] = None,
+    query_secret: Optional[str] = None,
+    query_token: Optional[str] = None,
+) -> bool:
+    """Validate request using shared webhook secret or internal session token."""
+    provided_secret = _extract_provided_secret(
+        request=request,
+        payload_secret=payload_secret,
+        header_secret=header_secret,
+        zapier_secret=zapier_secret,
+        auth_header=auth_header,
+        query_secret=query_secret,
+        query_token=query_token,
+    )
+    if verify_webhook_secret(provided_secret):
+        return True
+
+    # Check for bearer session token
+    if auth_header and auth_header.strip().lower().startswith("bearer "):
+        token = auth_header.strip()[7:].strip()
+        if verify_session_token(token) is not None:
+            return True
+
+    # Check for admin dashboard session cookie
+    cookie_token = request.cookies.get("hope_admin_session")
+    if cookie_token and verify_session_token(cookie_token) is not None:
+        return True
+
+    return False
 
 
 @router.post(
@@ -249,3 +293,236 @@ async def receive_incoming_email(
         duplicate=False,
         message="Email webhook processed and stored successfully.",
     )
+
+
+@router.post(
+    "/send",
+    response_model=OutgoingEmailResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Queue an outbound hospital verification email for Zapier/Hostinger dispatch",
+)
+async def send_outbound_email(
+    payload: OutgoingEmailPayload,
+    request: Request,
+    db: Session = Depends(get_db),
+    x_webhook_secret: Optional[str] = Header(None, alias="X-Webhook-Secret"),
+    x_zapier_secret: Optional[str] = Header(None, alias="X-Zapier-Secret"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    secret: Optional[str] = Query(None),
+    token: Optional[str] = Query(None),
+):
+    """Queue an outbound verification email into PostgreSQL.
+
+    - Authenticates using shared webhook secret or internal token.
+    - Captures application_id, recipient_email, subject, body, and correlation info.
+    - Stores record with status='pending' and returns email ID.
+    - Does NOT send SMTP directly; Zapier detects and dispatches via Hostinger.
+    - Protects privacy by masking identifiers and never logging email body content.
+    """
+    if not _authenticate_request(
+        request=request,
+        payload_secret=payload.webhook_secret,
+        header_secret=x_webhook_secret,
+        zapier_secret=x_zapier_secret,
+        auth_header=authorization,
+        query_secret=secret,
+        query_token=token,
+    ):
+        logger.warning(
+            "Unauthorized outbound email queue attempt from IP=%s",
+            request.client.host if request.client else "unknown",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing webhook secret.",
+        )
+
+    # Basic email format validation
+    recipient = payload.recipient_email.strip()
+    if "@" not in recipient or "." not in recipient.split("@")[-1]:
+        raise HTTPException(
+            status_code=getattr(status, "HTTP_422_UNPROCESSABLE_CONTENT", 422),
+            detail="Invalid recipient email address format.",
+        )
+
+    # Sanitize payload for raw storage (exclude secret)
+    raw_payload_dict: dict[str, Any] = {}
+    try:
+        raw_payload_dict = payload.model_dump(exclude={"webhook_secret"}, mode="json")
+    except Exception:
+        pass
+
+    outgoing_record = OutgoingEmail(
+        application_id=payload.application_id.strip(),
+        recipient_email=recipient,
+        subject=payload.subject.strip(),
+        body_plain=payload.body,
+        body_html=payload.body_html,
+        reply_to_message_id=payload.reply_to_message_id.strip() if payload.reply_to_message_id else None,
+        correlation_id=payload.correlation_id.strip() if payload.correlation_id else None,
+        status="pending",
+        raw_payload=raw_payload_dict if raw_payload_dict else None,
+    )
+
+    try:
+        db.add(outgoing_record)
+        db.commit()
+        db.refresh(outgoing_record)
+    except SQLAlchemyError:
+        db.rollback()
+        logger.exception(
+            "Database error queueing outbound email: app_id=%s",
+            _mask_identifier(payload.application_id),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Database error occurred while queueing outbound email.",
+        )
+
+    # Privacy-safe logging (never logs email body or medical details)
+    logger.info(
+        "Outbound email queued successfully: email_id=%s, app_id=%s, recipient=%s, reply_to=%s, status=pending",
+        outgoing_record.id,
+        _mask_identifier(outgoing_record.application_id),
+        _mask_email(outgoing_record.recipient_email),
+        _mask_identifier(outgoing_record.reply_to_message_id),
+    )
+
+    return OutgoingEmailResponse(
+        status="pending",
+        email_id=str(outgoing_record.id),
+        application_id=outgoing_record.application_id,
+        recipient_email=outgoing_record.recipient_email,
+        subject=outgoing_record.subject,
+        reply_to_message_id=outgoing_record.reply_to_message_id,
+        correlation_id=outgoing_record.correlation_id,
+        created_at=outgoing_record.created_at,
+        message="Outbound verification email queued successfully. Pending dispatch via Hostinger/Zapier.",
+    )
+
+
+@router.get(
+    "/pending",
+    response_model=list[OutgoingEmailListItem],
+    summary="List pending outbound emails for Zapier/Hostinger polling",
+)
+async def list_pending_emails(
+    request: Request,
+    limit: int = Query(25, ge=1, le=100),
+    db: Session = Depends(get_db),
+    x_webhook_secret: Optional[str] = Header(None, alias="X-Webhook-Secret"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    secret: Optional[str] = Query(None),
+):
+    """Retrieve queued outbound emails with status='pending' for Zapier to process."""
+    if not _authenticate_request(
+        request=request,
+        header_secret=x_webhook_secret,
+        auth_header=authorization,
+        query_secret=secret,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing webhook secret.",
+        )
+
+    rows = db.execute(
+        select(OutgoingEmail)
+        .where(OutgoingEmail.status == "pending")
+        .order_by(OutgoingEmail.created_at.asc())
+        .limit(limit)
+    ).scalars().all()
+
+    return [
+        OutgoingEmailListItem(
+            id=str(r.id),
+            application_id=r.application_id,
+            recipient_email=r.recipient_email,
+            subject=r.subject,
+            body_plain=r.body_plain,
+            body_html=r.body_html,
+            reply_to_message_id=r.reply_to_message_id,
+            correlation_id=r.correlation_id,
+            status=r.status,
+            created_at=r.created_at,
+            updated_at=r.updated_at,
+        )
+        for r in rows
+    ]
+
+
+@router.patch(
+    "/{email_id}/status",
+    response_model=OutgoingEmailListItem,
+    summary="Update delivery status of an outbound email",
+)
+async def update_email_status(
+    email_id: str,
+    payload: UpdateOutgoingEmailStatusPayload,
+    request: Request,
+    db: Session = Depends(get_db),
+    x_webhook_secret: Optional[str] = Header(None, alias="X-Webhook-Secret"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    secret: Optional[str] = Query(None),
+):
+    """Update status of an outgoing email (e.g. sent, failed) after Zapier dispatches through Hostinger."""
+    if not _authenticate_request(
+        request=request,
+        header_secret=x_webhook_secret,
+        auth_header=authorization,
+        query_secret=secret,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing webhook secret.",
+        )
+
+    try:
+        val_uuid = uuid.UUID(email_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid email_id format, must be UUID.",
+        )
+
+    record = db.execute(
+        select(OutgoingEmail).where(OutgoingEmail.id == val_uuid)
+    ).scalar_one_or_none()
+
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Outgoing email record not found.",
+        )
+
+    record.status = payload.status.lower()
+    if payload.error_message:
+        record.error_message = payload.error_message
+    if payload.sent_message_id:
+        record.correlation_id = payload.sent_message_id
+    if record.status == "sent":
+        record.sent_at = datetime.now(timezone.utc)
+
+    db.commit()
+    db.refresh(record)
+
+    logger.info(
+        "Outbound email status updated: email_id=%s, new_status=%s",
+        record.id,
+        record.status,
+    )
+
+    return OutgoingEmailListItem(
+        id=str(record.id),
+        application_id=record.application_id,
+        recipient_email=record.recipient_email,
+        subject=record.subject,
+        body_plain=record.body_plain,
+        body_html=record.body_html,
+        reply_to_message_id=record.reply_to_message_id,
+        correlation_id=record.correlation_id,
+        status=record.status,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+    )
+

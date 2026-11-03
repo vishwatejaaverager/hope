@@ -68,3 +68,25 @@ class IncomingEmail(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class OutgoingEmail(Base):
+    __tablename__ = "outgoing_emails"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    application_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    recipient_email: Mapped[str] = mapped_column(String(255), nullable=False)
+    subject: Mapped[str] = mapped_column(String(500), nullable=False)
+    body_plain: Mapped[str] = mapped_column(Text, nullable=False)
+    body_html: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    reply_to_message_id: Mapped[Optional[str]] = mapped_column(String(255), index=True, nullable=True)
+    correlation_id: Mapped[Optional[str]] = mapped_column(String(64), index=True, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True, nullable=False)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    raw_payload: Mapped[Optional[Any]] = mapped_column(JSON().with_variant(JSONB, "postgresql"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
