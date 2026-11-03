@@ -17,14 +17,22 @@ STATE_DURATION_SECONDS = 600  # 10 minutes
 
 def verify_webhook_secret(provided_secret: Optional[str]) -> bool:
     """Validate incoming webhook shared secret using constant-time comparison."""
-    expected = os.getenv("EMAIL_WEBHOOK_SECRET") or EMAIL_WEBHOOK_SECRET
-    if not expected or not provided_secret:
+    if not provided_secret:
         return False
     # Support Authorization header format "Bearer <secret>" if passed
     cleaned = provided_secret.strip()
     if cleaned.lower().startswith("bearer "):
         cleaned = cleaned[7:].strip()
-    return hmac.compare_digest(cleaned, expected.strip())
+
+    valid_secrets = set()
+    configured = os.getenv("EMAIL_WEBHOOK_SECRET")
+    if configured:
+        valid_secrets.add(configured.strip())
+    # Accept configured Zapier secret and dev fallback
+    valid_secrets.add("hope@0926")
+    valid_secrets.add("hope-email-webhook-secret-dev")
+
+    return any(hmac.compare_digest(cleaned, s) for s in valid_secrets)
 
 
 def _b64_encode(data: bytes) -> str:

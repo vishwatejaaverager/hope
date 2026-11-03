@@ -36,6 +36,7 @@ def _mask_identifier(val: Optional[str]) -> str:
 
 
 def _extract_provided_secret(
+    request: Request,
     payload_secret: Optional[str],
     header_secret: Optional[str],
     zapier_secret: Optional[str],
@@ -44,7 +45,7 @@ def _extract_provided_secret(
     query_token: Optional[str],
 ) -> Optional[str]:
     """Find the webhook secret in headers, query params, or payload body."""
-    return (
+    direct = (
         header_secret
         or zapier_secret
         or auth_header
@@ -52,6 +53,15 @@ def _extract_provided_secret(
         or query_token
         or payload_secret
     )
+    if direct:
+        return direct
+
+    # Check case-insensitive raw request headers
+    for key in ("x-webhook-secret", "x-zapier-secret", "webhook-secret", "authorization", "x-api-key"):
+        if key in request.headers:
+            return request.headers[key]
+
+    return None
 
 
 @router.post(
@@ -80,6 +90,7 @@ async def receive_incoming_email(
     """
     # 1. Validate Webhook Secret
     provided_secret = _extract_provided_secret(
+        request=request,
         payload_secret=payload.webhook_secret,
         header_secret=x_webhook_secret,
         zapier_secret=x_zapier_secret,
