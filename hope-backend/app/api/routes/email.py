@@ -2,7 +2,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -57,7 +57,15 @@ def _extract_provided_secret(
         return direct
 
     # Check case-insensitive raw request headers
-    for key in ("x-webhook-secret", "x-zapier-secret", "webhook-secret", "authorization", "x-api-key"):
+    for key in (
+        "x-webhook-secret",
+        "x-zapier-secret",
+        "webhook-secret",
+        "authorization",
+        "x-api-key",
+        "email-webhook-secret",
+        "email_webhook_secret",
+    ):
         if key in request.headers:
             return request.headers[key]
 
@@ -73,6 +81,7 @@ def _extract_provided_secret(
 async def receive_incoming_email(
     payload: IncomingEmailPayload,
     request: Request,
+    response: Response,
     db: Session = Depends(get_db),
     x_webhook_secret: Optional[str] = Header(None, alias="X-Webhook-Secret"),
     x_zapier_secret: Optional[str] = Header(None, alias="X-Zapier-Secret"),
@@ -133,6 +142,7 @@ async def receive_incoming_email(
             existing.application_id,
         )
         # 200 OK prevents Zapier from retrying indefinitely
+        response.status_code = status.HTTP_200_OK
         return IncomingEmailResponse(
             status="already_processed",
             email_id=str(existing.id),
@@ -196,6 +206,7 @@ async def receive_incoming_email(
                 _mask_identifier(payload.message_id),
                 existing_row.id,
             )
+            response.status_code = status.HTTP_200_OK
             return IncomingEmailResponse(
                 status="already_processed",
                 email_id=str(existing_row.id),
