@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api.routes import auth, payment, payout
+from app.api.routes import auth, email, payment, payout
 
 STATIC_DIR = Path(__file__).parent / "static"
 DASHBOARD_URL = os.getenv("DASHBOARD_URL", "http://localhost:3000").rstrip("/")
@@ -37,6 +37,7 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(payment.router)
 app.include_router(payout.router)
+app.include_router(email.router)
 
 
 @app.get("/")

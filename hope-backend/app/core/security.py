@@ -8,10 +8,23 @@ import time
 from typing import Any, Optional
 
 SESSION_SECRET = os.getenv("SESSION_SECRET", "hope-admin-insecure-dev-session-secret-change-me")
+EMAIL_WEBHOOK_SECRET = os.getenv("EMAIL_WEBHOOK_SECRET", "hope-email-webhook-secret-dev")
 SESSION_COOKIE_NAME = "hope_admin_session"
 STATE_COOKIE_NAME = "hope_oauth_state"
 SESSION_DURATION_SECONDS = 86400 * 7  # 7 days
 STATE_DURATION_SECONDS = 600  # 10 minutes
+
+
+def verify_webhook_secret(provided_secret: Optional[str]) -> bool:
+    """Validate incoming webhook shared secret using constant-time comparison."""
+    expected = os.getenv("EMAIL_WEBHOOK_SECRET") or EMAIL_WEBHOOK_SECRET
+    if not expected or not provided_secret:
+        return False
+    # Support Authorization header format "Bearer <secret>" if passed
+    cleaned = provided_secret.strip()
+    if cleaned.lower().startswith("bearer "):
+        cleaned = cleaned[7:].strip()
+    return hmac.compare_digest(cleaned, expected.strip())
 
 
 def _b64_encode(data: bytes) -> str:
