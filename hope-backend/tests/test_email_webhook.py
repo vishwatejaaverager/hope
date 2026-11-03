@@ -239,3 +239,48 @@ def test_incoming_email_extracts_application_id_from_body(client, db_session):
 
     saved = db_session.query(IncomingEmail).filter_by(message_id="<body-extract-msg@mail.example.com>").one()
     assert saved.application_id == "APP-43210"
+
+
+def test_incoming_email_rfc2822_date_format(client, db_session):
+    """Verify that email RFC 2822 format (e.g. 'Tue, 03 Nov 2026 09:30:15 +0000') parses cleanly."""
+    payload = {
+        "message_id": "<rfc2822-test-msg@mail.example.com>",
+        "sender": "applicant@example.com",
+        "recipient": "help@hope.org",
+        "subject": "Email with RFC date",
+        "body_plain": "Test body",
+        "Date": "Tue, 03 Nov 2026 09:30:15 +0000",
+    }
+
+    res = client.post(
+        "/api/v1/emails/incoming",
+        json=payload,
+        headers={"X-Webhook-Secret": TEST_SECRET},
+    )
+
+    assert res.status_code == 201
+    saved = db_session.query(IncomingEmail).filter_by(message_id="<rfc2822-test-msg@mail.example.com>").one()
+    assert saved.received_at.year == 2026
+    assert saved.received_at.month == 11
+    assert saved.received_at.day == 3
+
+
+def test_incoming_email_human_or_unparseable_date_fallback(client, db_session):
+    """Verify that human or unexpected date strings fall back gracefully without 422 error."""
+    payload = {
+        "message_id": "<human-date-test-msg@mail.example.com>",
+        "sender": "applicant@example.com",
+        "recipient": "help@hope.org",
+        "subject": "Email with human date",
+        "date": "November 3rd 2026, 9:30:00 am",
+    }
+
+    res = client.post(
+        "/api/v1/emails/incoming",
+        json=payload,
+        headers={"X-Webhook-Secret": TEST_SECRET},
+    )
+
+    assert res.status_code == 201
+    saved = db_session.query(IncomingEmail).filter_by(message_id="<human-date-test-msg@mail.example.com>").one()
+    assert saved.received_at is not None

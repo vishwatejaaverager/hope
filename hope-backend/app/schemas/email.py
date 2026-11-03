@@ -1,8 +1,73 @@
 import re
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+def parse_flexible_datetime(val: Any) -> Optional[datetime]:
+    """Parse various email date formats (RFC 2822, ISO 8601, timestamps) into UTC datetime."""
+    if not val:
+        return None
+    if isinstance(val, datetime):
+        if val.tzinfo is None:
+            return val.replace(tzinfo=timezone.utc)
+        return val
+
+    # If numeric timestamp
+    if isinstance(val, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(val), tz=timezone.utc)
+        except Exception:
+            pass
+
+    if isinstance(val, str):
+        val_str = val.strip()
+        if not val_str:
+            return None
+
+        # Check if numeric string timestamp
+        try:
+            timestamp = float(val_str)
+            return datetime.fromtimestamp(timestamp, tz=timezone.utc)
+        except ValueError:
+            pass
+
+        # 1. Try ISO 8601 (handling trailing 'Z' if present)
+        try:
+            iso_str = val_str
+            if iso_str.endswith("Z"):
+                iso_str = iso_str[:-1] + "+00:00"
+            dt = datetime.fromisoformat(iso_str)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except (ValueError, TypeError):
+            pass
+
+        # 2. Try RFC 2822 email date format (e.g. "Tue, 03 Nov 2026 09:30:15 +0000")
+        try:
+            dt = parsedate_to_datetime(val_str)
+            if dt is not None:
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt
+        except Exception:
+            pass
+
+        # 3. Try dateutil if available
+        try:
+            from dateutil import parser as dateutil_parser
+            dt = dateutil_parser.parse(val_str)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except Exception:
+            pass
+
+    # Safe fallback: return current UTC timestamp so emails are never rejected
+    return datetime.now(timezone.utc)
 
 # Common patterns for beneficiary application IDs:
 # e.g. APP-12345, APP_2026_001, BEN-9872, or UUID
@@ -96,12 +161,14 @@ class IncomingEmailPayload(BaseModel):
                     data["body_html"] = str(data[alt])
                     break
 
-        # 7. Normalize received_at / date
-        if not data.get("received_at"):
+        # 7. Normalize and parse received_at / date
+        raw_date = data.get("received_at")
+        if not raw_date:
             for alt in ("received_timestamp", "date", "timestamp", "Date"):
                 if data.get(alt):
-                    data["received_at"] = data[alt]
+                    raw_date = data[alt]
                     break
+        data["received_at"] = parse_flexible_datetime(raw_date)
 
         # 8. Normalize attachment metadata
         if data.get("attachment_metadata") is None and data.get("attachments"):
