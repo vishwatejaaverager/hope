@@ -208,10 +208,10 @@ class IncomingEmailResponse(BaseModel):
 class OutgoingEmailPayload(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    application_id: str = Field(..., description="Beneficiary or case application ID", max_length=64)
     recipient_email: str = Field(..., description="Recipient hospital or contact email address", max_length=255)
-    subject: str = Field(..., description="Email subject", max_length=500)
     body: str = Field(..., description="Plain-text email body content")
+    application_id: Optional[str] = Field("GENERAL", description="Beneficiary or case application ID", max_length=64)
+    subject: Optional[str] = Field("Hospital Verification Request", description="Email subject", max_length=500)
     body_html: Optional[str] = Field(None, description="Optional HTML body content")
     reply_to_message_id: Optional[str] = Field(
         None, description="Optional email message ID this email is in reply to", max_length=255
@@ -229,30 +229,36 @@ class OutgoingEmailPayload(BaseModel):
 
         data = dict(values)
 
-        # 1. Normalize application_id
-        if not data.get("application_id"):
-            for alt in ("applicationId", "case_id", "caseId", "app_id", "beneficiary_id"):
-                if data.get(alt):
-                    data["application_id"] = str(data[alt]).strip()
-                    break
-
-        # 2. Normalize recipient_email
+        # 1. Normalize recipient_email
         if not data.get("recipient_email"):
             for alt in ("to", "to_email", "to_address", "recipient", "email", "hospital_email"):
                 if data.get(alt):
                     data["recipient_email"] = str(data[alt]).strip()
                     break
 
-        # 3. Normalize subject
-        if not data.get("subject") and data.get("Subject"):
-            data["subject"] = str(data["Subject"]).strip()
-
-        # 4. Normalize body
+        # 2. Normalize body
         if not data.get("body"):
             for alt in ("body_plain", "text", "body_text", "plain_text", "content", "message"):
                 if data.get(alt):
                     data["body"] = str(data[alt])
                     break
+
+        # 3. Normalize subject (default if missing)
+        if not data.get("subject"):
+            if data.get("Subject"):
+                data["subject"] = str(data["Subject"]).strip()
+            else:
+                data["subject"] = "Hospital Verification Request"
+
+        # 4. Normalize application_id (extract or default if missing)
+        if not data.get("application_id"):
+            for alt in ("applicationId", "case_id", "caseId", "app_id", "beneficiary_id"):
+                if data.get(alt):
+                    data["application_id"] = str(data[alt]).strip()
+                    break
+        if not data.get("application_id"):
+            extracted = extract_application_id(data.get("subject"), data.get("body"))
+            data["application_id"] = extracted or "GENERAL"
 
         # 5. Normalize body_html
         if not data.get("body_html"):

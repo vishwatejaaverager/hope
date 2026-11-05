@@ -140,6 +140,24 @@ def test_send_outbound_email_field_normalization(client, db_session):
     assert data["correlation_id"] == "TRACK-555"
 
 
+def test_send_outbound_email_minimal_recipient_and_body_only(client, db_session):
+    payload = {
+        "recipient_email": "billing@cityhospital.org",
+        "body": "Please confirm verification for case APP-1234.",
+    }
+    res = client.post(
+        "/api/v1/emails/send",
+        json=payload,
+        headers={"X-Webhook-Secret": TEST_SECRET},
+    )
+    assert res.status_code == 201
+    data = res.json()
+    assert data["status"] == "pending"
+    assert data["recipient_email"] == "billing@cityhospital.org"
+    assert data["subject"] == "Hospital Verification Request"
+    assert data["application_id"] == "APP-1234"
+
+
 def test_send_outbound_email_invalid_recipient_format(client):
     payload = {
         "application_id": "APP-1111",
