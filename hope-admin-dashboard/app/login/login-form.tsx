@@ -3,7 +3,7 @@
 import { useState } from "react";
 
 export function LoginForm() {
-  const [email, setEmail] = useState("sb-bobib49935617@business.example.com");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -47,11 +47,25 @@ export function LoginForm() {
         </div>
       )}
 
+      {/* Official PayPal OAuth 2.0 Redirect Button */}
+      <a
+        href="/api/auth/login"
+        className="w-full flex items-center justify-center gap-2.5 py-2.5 px-4 rounded-lg bg-[#0070ba] hover:bg-[#005ea6] text-white font-semibold text-sm shadow-sm transition-colors"
+      >
+        <span>Log in with PayPal Sandbox</span>
+      </a>
+
+      <div className="relative flex items-center py-1">
+        <div className="grow border-t border-slate-200" />
+        <span className="mx-3 shrink text-xs text-slate-400">or sign in with Sandbox account</span>
+        <div className="grow border-t border-slate-200" />
+      </div>
+
       {/* Email & Password Form */}
       <form onSubmit={handleSubmit} className="space-y-4">
         <div>
           <label htmlFor="admin-email" className="block text-xs font-semibold text-slate-700">
-            PayPal Merchant Email
+            PayPal Sandbox Email
           </label>
           <div className="mt-1">
             <input
@@ -60,7 +74,7 @@ export function LoginForm() {
               required
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="sb-bobib49935617@business.example.com"
+              placeholder="sb-...@business.example.com"
               className="block w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-indigo-600 focus:outline-none focus:ring-1 focus:ring-indigo-600"
             />
           </div>
@@ -102,13 +116,6 @@ export function LoginForm() {
           )}
         </button>
       </form>
-
-      <div className="rounded-lg bg-slate-50 p-3.5 border border-slate-200 text-center">
-        <p className="text-[11px] text-slate-500">
-          <span className="font-semibold text-slate-700">PayPal Merchant Account:</span>{" "}
-          <span className="font-mono text-[10px] bg-white px-1.5 py-0.5 rounded border border-slate-200">sb-bobib49935617@business.example.com</span>
-        </p>
-      </div>
     </div>
   );
 }

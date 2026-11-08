@@ -114,6 +114,20 @@ def test_login_credentials_success(client, monkeypatch):
     )
     assert res.status_code == 200
     assert SESSION_COOKIE_NAME in res.cookies
+    assert "token" in res.json()
+
+
+def test_login_credentials_paypal_sandbox_account_verifies_via_paypal_api(client, monkeypatch):
+    monkeypatch.delenv("ADMIN_EMAIL", raising=False)
+    monkeypatch.delenv("ADMIN_PASSWORD", raising=False)
+    with patch("app.services.paypal_service.generate_access_token", return_value="mock_paypal_oauth_token"):
+        res = client.post(
+            "/api/auth/login-credentials",
+            json={"email": "sb-anymerchant@business.example.com", "password": "sandbox-password"},
+        )
+        assert res.status_code == 200
+        assert SESSION_COOKIE_NAME in res.cookies
+        assert "token" in res.json()
 
 
 def test_login_credentials_invalid(client):

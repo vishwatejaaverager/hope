@@ -10,7 +10,7 @@ export async function GET() {
   }
 
   const backendUrl =
-    process.env.HOPE_BACKEND_URL?.replace(/\/$/, "") || "http://127.0.0.1:8000";
+    process.env.HOPE_BACKEND_URL?.replace(/\/$/, "") || "https://hope-9dq5.onrender.com";
 
   try {
     const res = await fetch(`${backendUrl}/api/auth/me`, {
