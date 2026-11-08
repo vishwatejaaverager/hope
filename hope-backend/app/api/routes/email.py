@@ -1,5 +1,6 @@
 import logging
 import os
+import secrets
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -14,6 +15,7 @@ from sqlalchemy.orm import Session
 from app.core.security import verify_session_token, verify_webhook_secret
 from app.db import get_db
 from app.models import Case, IncomingEmail, OutgoingEmail
+from app.services import ai_service
 from app.schemas.email import (
     IncomingEmailListItem,
     IncomingEmailPayload,
@@ -277,9 +279,86 @@ async def receive_incoming_email(
         app_id=payload.application_id,
         sender_email=payload.sender,
     )
+
+    existing_context: Optional[dict[str, Any]] = None
+    if matched_case:
+        existing_context = {
+            "case_number": matched_case.case_number,
+            "patient_name": matched_case.patient_name,
+            "patient_email": matched_case.patient_email,
+            "medical_category": matched_case.medical_category,
+            "hospital_name": matched_case.hospital_name,
+            "estimated_cost": str(matched_case.estimated_cost) if matched_case.estimated_cost else None,
+            "requested_amount": str(matched_case.requested_amount) if matched_case.requested_amount else None,
+            "urgency": matched_case.urgency,
+            "status": matched_case.status,
+            "overall_summary": matched_case.overall_summary,
+            "next_action": matched_case.next_action,
+            "pending_items": matched_case.pending_items,
+        }
+
+    # 7. Run AI triage & living summary analysis (via OpenRouter with safe fallback)
+    ai_result = payload.ai_summary
+    if not ai_result:
+        ai_result = ai_service.analyze_incoming_email(
+            sender=payload.sender,
+            subject=payload.subject,
+            body_plain=payload.body_plain,
+            attachment_metadata=serialized_attachments,
+            existing_case_context=existing_context,
+        )
+
+    # 8. Create or update the linked Case record with AI living summary
+    if isinstance(ai_result, dict):
+        est_cost = ai_service.to_decimal_or_none(ai_result.get("estimated_cost"))
+        req_amt = ai_service.to_decimal_or_none(ai_result.get("requested_amount"))
+        if matched_case is None:
+            candidate_case_num = (
+                payload.application_id.strip()
+                if payload.application_id and len(payload.application_id.strip()) <= 32
+                else f"CASE-{datetime.now().year}-{secrets.token_hex(3).upper()}"
+            )
+            # Ensure unique case_number
+            if db.execute(select(Case).where(Case.case_number == candidate_case_num)).scalar_one_or_none():
+                candidate_case_num = f"{candidate_case_num[:26]}-{secrets.token_hex(2).upper()}"
+
+            matched_case = Case(
+                case_number=candidate_case_num,
+                patient_name=ai_result.get("patient_name"),
+                patient_email=ai_result.get("patient_email") or payload.sender,
+                medical_category=ai_result.get("medical_category") or "general",
+                treatment_description=ai_result.get("treatment_description"),
+                hospital_name=ai_result.get("hospital_name"),
+                estimated_cost=est_cost,
+                requested_amount=req_amt,
+                currency="USD",
+                urgency=str(ai_result.get("urgency") or "medium").lower(),
+                status=str(ai_result.get("status") or "new").lower(),
+                overall_summary=ai_result.get("overall_summary") or ai_result.get("summary"),
+                next_action=ai_result.get("next_action"),
+                pending_items=ai_result.get("pending_items"),
+            )
+            db.add(matched_case)
+            db.flush()
+        else:
+            if ai_result.get("overall_summary"):
+                matched_case.overall_summary = str(ai_result["overall_summary"])
+            if ai_result.get("next_action"):
+                matched_case.next_action = str(ai_result["next_action"])[:255]
+            if ai_result.get("pending_items") is not None:
+                matched_case.pending_items = ai_result["pending_items"]
+            if not matched_case.patient_name and ai_result.get("patient_name"):
+                matched_case.patient_name = str(ai_result["patient_name"])[:255]
+            if not matched_case.hospital_name and ai_result.get("hospital_name"):
+                matched_case.hospital_name = str(ai_result["hospital_name"])[:255]
+            if not matched_case.estimated_cost and est_cost is not None:
+                matched_case.estimated_cost = est_cost
+            if not matched_case.requested_amount and req_amt is not None:
+                matched_case.requested_amount = req_amt
+
     resolved_app_id = payload.application_id or (matched_case.case_number if matched_case else None)
 
-    # 7. Create database record
+    # 9. Create database record
     email_record = IncomingEmail(
         case_id=matched_case.id if matched_case else None,
         message_id=payload.message_id,
@@ -292,7 +371,7 @@ async def receive_incoming_email(
         attachment_count=len(serialized_attachments),
         application_id=resolved_app_id,
         raw_payload=raw_body_dict if raw_body_dict else None,
-        ai_summary=payload.ai_summary,
+        ai_summary=ai_result,
         received_at=received_timestamp,
     )
 

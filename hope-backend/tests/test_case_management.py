@@ -314,3 +314,47 @@ def test_auto_link_incoming_and_outgoing_emails_and_ai_summary(client, db_sessio
     assert len(detail["timeline"]) == 2
     assert detail["timeline"][0]["ai_summary"]["intent"] == "document_submission"
 
+
+def test_incoming_email_auto_creates_case_and_ai_living_summary(client, db_session, monkeypatch):
+    monkeypatch.delenv("OPENROUTER_API", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    res_inc = client.post(
+        "/api/v1/emails/incoming",
+        json={
+            "message_id": "<new-case-01@patient.org>",
+            "sender": "Priya Nair <priya.nair@patient.org>",
+            "recipient": "applications@hope.org",
+            "subject": "Urgent surgery assistance needed",
+            "body_plain": "Hello Hope team, I have an upcoming surgery at Apollo Hospital costing $12,500 and need urgent financial assistance.",
+            "attachments": [
+                {"filename": "apollo_estimate.pdf", "content_type": "application/pdf", "size": 40960}
+            ],
+            "received_at": "2026-11-07T09:00:00Z",
+        },
+        headers={"X-Webhook-Secret": TEST_SECRET},
+    )
+    assert res_inc.status_code == 201
+    inc_data = res_inc.json()
+    assert inc_data["case_id"] is not None
+    assert inc_data["application_id"].startswith("CASE-")
+
+    # Verify the auto-created case has AI living summary & extracted fields
+    res_case = client.get(
+        f"/api/v1/cases/{inc_data['case_id']}",
+        headers={"X-Webhook-Secret": TEST_SECRET},
+    )
+    assert res_case.status_code == 200
+    case_data = res_case.json()
+    assert case_data["patient_name"] == "Priya Nair"
+    assert case_data["patient_email"] == "priya.nair@patient.org"
+    assert case_data["medical_category"] == "upcoming_surgery"
+    assert case_data["urgency"] in ("high", "critical")
+    assert float(case_data["estimated_cost"]) == 12500.0
+    assert case_data["overall_summary"] is not None
+    assert case_data["next_action"] is not None
+    assert len(case_data["timeline"]) == 1
+    assert case_data["timeline"][0]["ai_summary"] is not None
+    assert "summary" in case_data["timeline"][0]["ai_summary"]
+
+
