@@ -203,23 +203,11 @@ export function EmailCommunicationsPanel({ emails }: { emails: EmailRow[] }) {
                   </div>
                 </div>
 
-                {/* AI Summary Box (if available) */}
-                {selected.aiSummaryText && selected.aiSummaryText !== '—' && (
-                  <div className="rounded-lg border border-indigo-200 bg-indigo-50/60 p-4">
-                    <div className="text-xs font-bold uppercase tracking-wider text-indigo-800">
-                      AI Summary
-                    </div>
-                    <p className="mt-1 text-sm text-indigo-950 whitespace-pre-wrap">
-                      {selected.aiSummaryText}
-                    </p>
-                  </div>
-                )}
-
-                {/* Attachments Section */}
+                {/* Documents / Attachments Section */}
                 {selected.attachmentCount > 0 && (
                   <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
                     <div className="text-xs font-bold uppercase tracking-wider text-slate-700">
-                      Attachments ({selected.attachmentCount})
+                      Documents ({selected.attachmentCount})
                     </div>
                     {selected.attachments.length > 0 ? (
                       <ul className="mt-2 space-y-2">
@@ -289,14 +277,70 @@ export function MedicalCasesPanel({
   emails: EmailRow[];
 }) {
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(cases[0]?.id ?? null);
+  const [disbursingId, setDisbursingId] = useState<string | null>(null);
+  const [disburseResult, setDisburseResult] = useState<{
+    caseId: string;
+    ok: boolean;
+    message: string;
+  } | null>(null);
+
   const selectedCase = cases.find((c) => c.id === selectedCaseId) ?? cases[0] ?? null;
 
+  async function handleDisburse(c: CaseRow) {
+    setDisbursingId(c.id);
+    setDisburseResult(null);
+    try {
+      const res = await fetch(`/api/cases/${encodeURIComponent(c.id)}/disburse`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          recipient_email: c.patientEmail !== '—' ? c.patientEmail : undefined,
+          amount: c.requestedAmount > 0 ? c.requestedAmount : c.estimatedCost > 0 ? c.estimatedCost : undefined,
+          beneficiary_name: c.patientName !== 'Unknown Patient' ? c.patientName : undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setDisburseResult({
+          caseId: c.id,
+          ok: false,
+          message: data.detail || 'Failed to disburse payout via PayPal.',
+        });
+      } else {
+        setDisburseResult({
+          caseId: c.id,
+          ok: true,
+          message: data.message || `Disbursed $${data.amount} to ${data.recipient_email} (Batch: ${data.batch_id})`,
+        });
+      }
+    } catch (err) {
+      setDisburseResult({
+        caseId: c.id,
+        ok: false,
+        message: err instanceof Error ? err.message : 'Network error during disbursement',
+      });
+    } finally {
+      setDisbursingId(null);
+    }
+  }
+
   const caseEmails = selectedCase
-    ? emails.filter(
-        (e) =>
-          e.caseId === selectedCase.id ||
-          e.applicationId.toLowerCase() === selectedCase.caseNumber.toLowerCase(),
-      )
+    ? (() => {
+        if (selectedCase.emailExchanges && selectedCase.emailExchanges.length > 0) {
+          const emailByRawId = new Map(emails.map((e) => [e.rawId, e]));
+          const orderedFromExchanges = selectedCase.emailExchanges
+            .map((ex) => emailByRawId.get(ex.id))
+            .filter((e): e is EmailRow => e !== undefined);
+          if (orderedFromExchanges.length > 0) {
+            return orderedFromExchanges;
+          }
+        }
+        return emails.filter(
+          (e) =>
+            e.caseId === selectedCase.id ||
+            e.applicationId.toLowerCase() === selectedCase.caseNumber.toLowerCase(),
+        );
+      })()
     : [];
 
   if (cases.length === 0) {
@@ -361,20 +405,58 @@ export function MedicalCasesPanel({
           <div className="space-y-6">
             <div className="border-b border-slate-200 pb-4">
               <div className="flex items-center justify-between">
-                <span className="font-mono text-sm font-bold text-pp-blue">
-                  {selectedCase.caseNumber}
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-sm font-bold text-pp-blue">
+                    {selectedCase.caseNumber}
+                  </span>
+                  {(selectedCase.status === 'approved' ||
+                    selectedCase.pendingItemsText === '—' ||
+                    selectedCase.pendingItemsText === '') && (
+                    <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-[11px] font-bold text-emerald-800">
+                      ✓ 100% AI Verified
+                    </span>
+                  )}
+                </div>
                 <span className="text-xs text-slate-500">{selectedCase.date}</span>
               </div>
-              <h2 className="mt-1 text-xl font-bold text-pp-navy">
-                {selectedCase.patientName} ({selectedCase.patientEmail})
-              </h2>
-              <p className="mt-1 text-xs text-slate-600">
-                Hospital: <strong>{selectedCase.hospitalName}</strong> • Category:{' '}
-                <strong>{selectedCase.medicalCategory}</strong> • Requested:{' '}
-                <strong>${selectedCase.requestedAmount.toLocaleString()}</strong> (Estimated: $
-                {selectedCase.estimatedCost.toLocaleString()})
-              </p>
+              <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-xl font-bold text-pp-navy">
+                    {selectedCase.patientName} ({selectedCase.patientEmail})
+                  </h2>
+                  <p className="mt-1 text-xs text-slate-600">
+                    Hospital: <strong>{selectedCase.hospitalName}</strong> • Category:{' '}
+                    <strong>{selectedCase.medicalCategory}</strong> • Requested:{' '}
+                    <strong>${selectedCase.requestedAmount.toLocaleString()}</strong> (Estimated: $
+                    {selectedCase.estimatedCost.toLocaleString()})
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  disabled={disbursingId === selectedCase.id || selectedCase.status === 'disbursed'}
+                  onClick={() => handleDisburse(selectedCase)}
+                  className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white shadow-xs transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {disbursingId === selectedCase.id
+                    ? 'Sending PayPal Payout...'
+                    : selectedCase.status === 'disbursed'
+                      ? '✓ Payout Disbursed'
+                      : `Send Payout ($${(selectedCase.requestedAmount || selectedCase.estimatedCost || 0).toLocaleString()})`}
+                </button>
+              </div>
+
+              {disburseResult && disburseResult.caseId === selectedCase.id && (
+                <div
+                  className={`mt-3 rounded-lg border px-3 py-2 text-xs font-medium ${
+                    disburseResult.ok
+                      ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
+                      : 'border-red-200 bg-red-50 text-red-800'
+                  }`}
+                >
+                  {disburseResult.message}
+                </div>
+              )}
             </div>
 
             <div className="rounded-xl border border-indigo-200 bg-indigo-50/60 p-4">
@@ -423,6 +505,28 @@ export function MedicalCasesPanel({
                       <p className="mt-2 rounded bg-white p-3 text-slate-800 whitespace-pre-wrap border border-slate-200/70">
                         {em.bodyPlain}
                       </p>
+                      {em.attachments.length > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {em.attachments.map((att, idx) => (
+                            <span
+                              key={idx}
+                              className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-700"
+                            >
+                              <span>📎 {att.filename || `Document ${idx + 1}`}</span>
+                              {att.url && (
+                                <a
+                                  href={att.url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="font-semibold text-pp-blue hover:underline"
+                                >
+                                  (Open)
+                                </a>
+                              )}
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>

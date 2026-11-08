@@ -93,6 +93,7 @@ export interface CaseRow {
   overallSummary: string;
   nextAction: string;
   pendingItemsText: string;
+  emailExchanges: Array<{ id: string; direction: string }>;
   incomingEmailCount: number;
   outgoingEmailCount: number;
   totalEmailCount: number;
@@ -119,7 +120,6 @@ export interface EmailRow {
   bodyPlain: string;
   bodyHtml: string | null;
   bodySnippet: string;
-  aiSummaryText: string;
   attachmentCount: number;
   attachments: EmailAttachmentItem[];
   status: string;
@@ -299,6 +299,12 @@ function mapCases(records: CaseRecord[]): CaseRow[] {
   return records.map((c) => {
     const inc = Number(c.incoming_email_count) || 0;
     const out = Number(c.outgoing_email_count) || 0;
+    const exchanges = Array.isArray(c.email_exchanges)
+      ? c.email_exchanges.filter(
+          (item): item is { id: string; direction: string } =>
+            !!item && typeof item === "object" && typeof (item as { id?: unknown }).id === "string",
+        )
+      : [];
     return {
       id: c.id,
       caseNumber: c.case_number,
@@ -315,6 +321,7 @@ function mapCases(records: CaseRecord[]): CaseRow[] {
       overallSummary: c.overall_summary || "No summary yet",
       nextAction: c.next_action || "—",
       pendingItemsText: formatPendingItems(c.pending_items),
+      emailExchanges: exchanges,
       incomingEmailCount: inc,
       outgoingEmailCount: out,
       totalEmailCount: inc + out,
@@ -356,7 +363,6 @@ function mapEmails(
       bodyPlain: bodyText || "(Empty email body)",
       bodyHtml: em.body_html || null,
       bodySnippet: bodyText ? bodyText.slice(0, 160) : "—",
-      aiSummaryText: formatAiSummary(em.ai_summary),
       attachmentCount: Number(em.attachment_count) || parsedAtts.length,
       attachments: parsedAtts,
       status: "RECEIVED",
@@ -383,7 +389,6 @@ function mapEmails(
       bodyPlain: bodyText || "(Empty email body)",
       bodyHtml: em.body_html || null,
       bodySnippet: bodyText ? bodyText.slice(0, 160) : "—",
-      aiSummaryText: "Outbound verification / follow-up email",
       attachmentCount: 0,
       attachments: [],
       status: (em.status || "pending").toUpperCase(),

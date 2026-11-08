@@ -173,9 +173,48 @@ class IncomingEmailPayload(BaseModel):
                     break
         data["received_at"] = parse_flexible_datetime(raw_date)
 
-        # 8. Normalize attachment metadata
-        if data.get("attachment_metadata") is None and data.get("attachments"):
-            data["attachment_metadata"] = data.get("attachments")
+        # 8. Normalize attachment metadata (handles list, JSON string, or flat Zapier url/filename fields)
+        if data.get("attachment_metadata") is None:
+            raw_att = data.get("attachments")
+            if isinstance(raw_att, list):
+                data["attachment_metadata"] = raw_att
+            elif isinstance(raw_att, str) and raw_att.strip():
+                try:
+                    import json as _json
+                    parsed_att = _json.loads(raw_att)
+                    if isinstance(parsed_att, list):
+                        data["attachment_metadata"] = parsed_att
+                    elif isinstance(parsed_att, dict):
+                        data["attachment_metadata"] = [parsed_att]
+                    else:
+                        data["attachment_metadata"] = [{"url": u.strip(), "filename": u.strip().split("/")[-1]} for u in raw_att.split(",") if u.strip()]
+                except Exception:
+                    data["attachment_metadata"] = [
+                        {"url": u.strip(), "filename": u.strip().split("/")[-1] or "attachment"}
+                        for u in raw_att.split(",")
+                        if u.strip()
+                    ]
+            else:
+                flat_url = (
+                    data.get("attachment_url")
+                    or data.get("file_url")
+                    or data.get("file")
+                    or data.get("attachment")
+                )
+                if isinstance(flat_url, str) and flat_url.strip():
+                    flat_name = (
+                        data.get("attachment_filename")
+                        or data.get("filename")
+                        or flat_url.strip().split("/")[-1]
+                        or "attachment"
+                    )
+                    data["attachment_metadata"] = [
+                        {
+                            "filename": str(flat_name),
+                            "url": flat_url.strip(),
+                            "content_type": data.get("attachment_content_type") or data.get("content_type"),
+                        }
+                    ]
 
         # 9. Extract or normalize application_id
         if not data.get("application_id"):
@@ -221,7 +260,6 @@ class IncomingEmailListItem(BaseModel):
     attachment_metadata: Optional[Any] = None
     attachment_count: int = 0
     application_id: Optional[str] = None
-    ai_summary: Optional[Any] = None
     received_at: datetime
     created_at: datetime
     updated_at: datetime
@@ -232,7 +270,7 @@ class UpdateIncomingEmailPayload(BaseModel):
 
     case_id: Optional[str] = Field(None, description="Case UUID or case_number to link")
     application_id: Optional[str] = Field(None, max_length=64)
-    ai_summary: Optional[Any] = Field(None, description="AI summary (string or JSON object) for this email")
+    attachment_metadata: Optional[list[dict[str, Any]]] = None
 
 
 class OutgoingEmailPayload(BaseModel):

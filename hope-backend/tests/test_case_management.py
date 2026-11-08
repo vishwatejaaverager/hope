@@ -272,20 +272,18 @@ def test_auto_link_incoming_and_outgoing_emails_and_ai_summary(client, db_sessio
     assert inc_data["application_id"] == "CASE-2026-AUTO1"
     inc_email_id = inc_data["email_id"]
 
-    # 3. Update AI summary on the incoming email
+    # 3. Update attachment_metadata (documents list) on the incoming email
     res_patch_inc = client.patch(
         f"/api/v1/emails/incoming/{inc_email_id}",
         json={
-            "ai_summary": {
-                "intent": "document_submission",
-                "extracted_documents": ["interim_hospital_bill"],
-                "summary": "Patient submitted interim hospital bill.",
-            }
+            "attachment_metadata": [
+                {"filename": "interim_hospital_bill.pdf", "url": "https://files.hope.org/interim_hospital_bill.pdf"}
+            ]
         },
         headers={"X-Webhook-Secret": TEST_SECRET},
     )
     assert res_patch_inc.status_code == 200
-    assert res_patch_inc.json()["ai_summary"]["intent"] == "document_submission"
+    assert res_patch_inc.json()["attachment_metadata"][0]["filename"] == "interim_hospital_bill.pdf"
 
     # 4. Send outbound email with application_id = CASE-2026-AUTO1
     res_out = client.post(
@@ -302,7 +300,7 @@ def test_auto_link_incoming_and_outgoing_emails_and_ai_summary(client, db_sessio
     assert res_out.status_code == 201
     assert res_out.json()["case_id"] == case_id
 
-    # 5. Fetch case detail and verify both emails + AI summary are in timeline
+    # 5. Fetch case detail and verify incoming + auto-reply + explicit outbound emails + email_exchanges are in case
     res_detail = client.get(
         f"/api/v1/cases/{case_id}",
         headers={"X-Webhook-Secret": TEST_SECRET},
@@ -310,9 +308,11 @@ def test_auto_link_incoming_and_outgoing_emails_and_ai_summary(client, db_sessio
     assert res_detail.status_code == 200
     detail = res_detail.json()
     assert detail["incoming_email_count"] == 1
-    assert detail["outgoing_email_count"] == 1
-    assert len(detail["timeline"]) == 2
-    assert detail["timeline"][0]["ai_summary"]["intent"] == "document_submission"
+    assert detail["outgoing_email_count"] == 2
+    assert len(detail["timeline"]) == 3
+    assert len(detail["email_exchanges"]) == 3
+    assert detail["email_exchanges"][0]["id"] == inc_email_id
+    assert detail["email_exchanges"][0]["direction"] == "incoming"
 
 
 def test_incoming_email_auto_creates_case_and_ai_living_summary(client, db_session, monkeypatch):
@@ -328,7 +328,12 @@ def test_incoming_email_auto_creates_case_and_ai_living_summary(client, db_sessi
             "subject": "Urgent surgery assistance needed",
             "body_plain": "Hello Hope team, I have an upcoming surgery at Apollo Hospital costing $12,500 and need urgent financial assistance.",
             "attachments": [
-                {"filename": "apollo_estimate.pdf", "content_type": "application/pdf", "size": 40960}
+                {
+                    "filename": "apollo_estimate.pdf",
+                    "url": "https://files.hope.org/apollo_estimate.pdf",
+                    "content_type": "application/pdf",
+                    "size": 40960,
+                }
             ],
             "received_at": "2026-11-07T09:00:00Z",
         },
@@ -339,7 +344,7 @@ def test_incoming_email_auto_creates_case_and_ai_living_summary(client, db_sessi
     assert inc_data["case_id"] is not None
     assert inc_data["application_id"].startswith("CASE-")
 
-    # Verify the auto-created case has AI living summary & extracted fields
+    # Verify the auto-created case has AI living summary, email_exchanges & auto-reply queued
     res_case = client.get(
         f"/api/v1/cases/{inc_data['case_id']}",
         headers={"X-Webhook-Secret": TEST_SECRET},
@@ -353,8 +358,16 @@ def test_incoming_email_auto_creates_case_and_ai_living_summary(client, db_sessi
     assert float(case_data["estimated_cost"]) == 12500.0
     assert case_data["overall_summary"] is not None
     assert case_data["next_action"] is not None
-    assert len(case_data["timeline"]) == 1
-    assert case_data["timeline"][0]["ai_summary"] is not None
-    assert "summary" in case_data["timeline"][0]["ai_summary"]
+    assert case_data["incoming_email_count"] == 1
+    assert case_data["outgoing_email_count"] == 1  # Auto-reply email queued automatically!
+    assert len(case_data["timeline"]) == 2
+    assert len(case_data["email_exchanges"]) == 2
+    assert case_data["email_exchanges"][0]["id"] == inc_data["email_id"]
+    assert case_data["email_exchanges"][0]["direction"] == "incoming"
+    assert case_data["email_exchanges"][1]["direction"] == "outgoing"
+    assert case_data["timeline"][0]["attachments"][0]["filename"] == "apollo_estimate.pdf"
+    assert case_data["timeline"][0]["attachments"][0]["url"] == "https://files.hope.org/apollo_estimate.pdf"
+    assert case_data["timeline"][1]["direction"] == "outgoing"
+    assert case_data["timeline"][1]["recipient"] == "priya.nair@patient.org"
 
 

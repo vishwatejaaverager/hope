@@ -11,15 +11,19 @@ from sqlalchemy.orm import Session
 
 from app.core.security import authenticate_request
 from app.db import get_db
-from app.models import Case, IncomingEmail, OutgoingEmail
+from app.models import Case, IncomingEmail, OutgoingEmail, Payout
 from app.schemas.case import (
     CaseCreate,
     CaseDetailResponse,
+    CaseDisburseRequest,
+    CaseDisburseResponse,
     CaseLinkEmailRequest,
     CaseResponse,
     CaseTimelineItem,
     CaseUpdate,
 )
+from app.services import ai_service, paypal_service
+from app.services.paypal_service import PayPalError
 
 logger = logging.getLogger(__name__)
 
@@ -52,9 +56,30 @@ def _find_case_by_identifier(db: Session, identifier: str) -> Optional[Case]:
     return db.execute(stmt).scalar_one_or_none()
 
 
+def _compute_ordered_exchanges(c: Case) -> list[dict[str, str]]:
+    """Build or return the ordered list of email exchanges (PK + direction) for a Case."""
+    items: list[tuple[datetime, str, str]] = []
+    for inc in c.incoming_emails or []:
+        ts = inc.received_at
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        items.append((ts, str(inc.id), "incoming"))
+    for out in c.outgoing_emails or []:
+        ts = out.created_at
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        items.append((ts, str(out.id), "outgoing"))
+    items.sort(key=lambda x: x[0])
+    computed = [{"id": pk, "direction": direction} for _, pk, direction in items]
+    if isinstance(c.email_exchanges, list) and len(c.email_exchanges) >= len(computed):
+        return c.email_exchanges
+    return computed
+
+
 def _build_case_response(c: Case) -> CaseResponse:
     inc_count = len(c.incoming_emails) if c.incoming_emails else 0
     out_count = len(c.outgoing_emails) if c.outgoing_emails else 0
+    exchanges = _compute_ordered_exchanges(c)
     return CaseResponse(
         id=str(c.id),
         case_number=c.case_number,
@@ -72,6 +97,7 @@ def _build_case_response(c: Case) -> CaseResponse:
         overall_summary=c.overall_summary,
         next_action=c.next_action,
         pending_items=c.pending_items,
+        email_exchanges=exchanges,
         incoming_email_count=inc_count,
         outgoing_email_count=out_count,
         created_at=c.created_at,
@@ -86,6 +112,7 @@ def _build_case_detail_response(c: Case) -> CaseDetailResponse:
     if c.incoming_emails:
         for em in c.incoming_emails:
             body_prev = em.body_plain[:150] if em.body_plain else None
+            atts = em.attachment_metadata if isinstance(em.attachment_metadata, list) else None
             timeline.append(
                 CaseTimelineItem(
                     id=str(em.id),
@@ -97,7 +124,7 @@ def _build_case_detail_response(c: Case) -> CaseDetailResponse:
                     body_snippet=body_prev,
                     status="received",
                     timestamp=em.received_at,
-                    ai_summary=em.ai_summary,
+                    attachments=atts,
                 )
             )
 
@@ -115,7 +142,7 @@ def _build_case_detail_response(c: Case) -> CaseDetailResponse:
                     body_snippet=body_prev,
                     status=em.status,
                     timestamp=em.created_at,
-                    ai_summary=None,
+                    attachments=None,
                 )
             )
 
@@ -389,6 +416,142 @@ def link_email_to_case(
             detail="No valid incoming_email_id or outgoing_email_id found to link.",
         )
 
+    db.flush()
+    db.refresh(case_row)
+    case_row.email_exchanges = _compute_ordered_exchanges(case_row)
     db.commit()
     db.refresh(case_row)
     return _build_case_detail_response(case_row)
+
+
+@router.post(
+    "/{case_identifier}/disburse",
+    response_model=CaseDisburseResponse,
+    summary="Disburse PayPal payout to beneficiary for a verified medical case",
+)
+def disburse_case_payout(
+    case_identifier: str,
+    request: Request,
+    payload: Optional[CaseDisburseRequest] = None,
+    db: Session = Depends(get_db),
+    x_webhook_secret: Optional[str] = Header(None, alias="X-Webhook-Secret"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    secret: Optional[str] = Query(None),
+):
+    if not authenticate_request(
+        request=request,
+        header_secret=x_webhook_secret,
+        auth_header=authorization,
+        query_secret=secret,
+    ):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or missing webhook secret.")
+
+    case_row = _find_case_by_identifier(db, case_identifier)
+    if not case_row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found.")
+
+    raw_email = (payload.recipient_email if payload and payload.recipient_email else None) or case_row.patient_email
+    recipient_email = ai_service._extract_email_address(raw_email or "")
+    if not recipient_email or "@" not in recipient_email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Valid recipient_email is required to disburse funds.",
+        )
+
+    payout_amount = (
+        (payload.amount if payload and payload.amount is not None else None)
+        or case_row.requested_amount
+        or case_row.estimated_cost
+    )
+    if not payout_amount or payout_amount <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A positive payout amount is required (set requested_amount or pass amount in payload).",
+        )
+
+    beneficiary_name = (
+        (payload.beneficiary_name if payload and payload.beneficiary_name else None)
+        or case_row.patient_name
+        or "Hope Beneficiary"
+    )
+    amount_str = f"{payout_amount:.2f}"
+
+    try:
+        created = paypal_service.create_payout(
+            recipient_email,
+            amount_str,
+            f"Hope medical assistance payout for {case_row.case_number} ({beneficiary_name})",
+        )
+    except PayPalError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message)
+
+    batch_id = created.get("batch_header", {}).get("payout_batch_id")
+    if not batch_id:
+        raise HTTPException(status_code=502, detail="PayPal did not return a payout batch ID")
+
+    try:
+        data = paypal_service.get_payout(batch_id)
+    except PayPalError:
+        data = created
+
+    header = data.get("batch_header", {})
+    batch_status = header.get("batch_status", "PENDING")
+    items = data.get("items") or []
+    item = items[0] if items else {}
+    item_status = item.get("transaction_status")
+    paid = item_status == "SUCCESS"
+
+    # Persist Payout record and update Case status
+    payout_row = Payout(
+        beneficiary_name=beneficiary_name,
+        recipient_email=recipient_email,
+        amount=payout_amount,
+        currency="USD",
+        payment_provider="paypal",
+        paypal_batch_id=batch_id,
+        paypal_item_id=item.get("payout_item_id"),
+        paypal_transaction_id=item.get("transaction_id"),
+        batch_status=batch_status,
+        item_status=item_status,
+        raw_response=data,
+    )
+    case_row.status = "disbursed"
+    case_row.next_action = f"Funds disbursed via PayPal (Batch {batch_id})"
+
+    # Queue confirmation email to beneficiary
+    confirm_email = OutgoingEmail(
+        case_id=case_row.id,
+        application_id=case_row.case_number,
+        recipient_email=recipient_email,
+        subject=f"Payout Disbursed (${amount_str}) - [{case_row.case_number}]",
+        body_plain=(
+            f"Dear {beneficiary_name},\n\n"
+            f"Your medical assistance payout of ${amount_str} USD for case {case_row.case_number} "
+            f"has been sent via PayPal (Batch ID: {batch_id}).\n\n"
+            "Wishing you a speedy recovery,\nHope Medical Foundation"
+        ),
+        status="pending",
+    )
+
+    try:
+        db.add(payout_row)
+        db.add(confirm_email)
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        logger.exception("Could not record case disbursement for case %s", case_row.case_number)
+
+    return CaseDisburseResponse(
+        case_id=str(case_row.id),
+        case_number=case_row.case_number,
+        case_status=case_row.status,
+        batch_id=batch_id,
+        batch_status=batch_status,
+        item_status=item_status,
+        amount=amount_str,
+        currency="USD",
+        recipient_email=recipient_email,
+        paid=paid,
+        message=f"Disbursed ${amount_str} USD to {recipient_email} via PayPal (Batch: {batch_id}).",
+    )
+

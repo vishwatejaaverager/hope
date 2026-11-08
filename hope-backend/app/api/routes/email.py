@@ -249,16 +249,31 @@ async def receive_incoming_email(
             message="Email with this message ID was already processed.",
         )
 
-    # 3. Format and normalize attachment metadata
+    # 3. Format and normalize attachment metadata as a clean list of {filename, url} (+ optional content_type/size)
     raw_attachments = payload.attachment_metadata or []
     serialized_attachments: list[dict[str, Any]] = []
-    for att in raw_attachments:
-        if hasattr(att, "model_dump"):
-            serialized_attachments.append(att.model_dump(exclude_none=True))
-        elif isinstance(att, dict):
-            serialized_attachments.append(att)
-        else:
-            serialized_attachments.append({"raw": str(att)})
+    for idx, att in enumerate(raw_attachments):
+        raw_dict = att.model_dump(exclude_none=True) if hasattr(att, "model_dump") else (att if isinstance(att, dict) else {"url": str(att)})
+        url_val = (
+            raw_dict.get("url")
+            or raw_dict.get("attachment_url")
+            or raw_dict.get("file_url")
+            or raw_dict.get("file")
+        )
+        fname_val = (
+            raw_dict.get("filename")
+            or raw_dict.get("name")
+            or (str(url_val).split("/")[-1] if url_val else f"document_{idx + 1}")
+        )
+        clean_doc: dict[str, Any] = {
+            "filename": str(fname_val),
+            "url": str(url_val) if url_val else None,
+        }
+        if raw_dict.get("content_type"):
+            clean_doc["content_type"] = raw_dict["content_type"]
+        if raw_dict.get("size") is not None:
+            clean_doc["size"] = raw_dict["size"]
+        serialized_attachments.append(clean_doc)
 
     # 4. Normalize received_at timestamp
     received_timestamp = payload.received_at or datetime.now(timezone.utc)
@@ -355,10 +370,14 @@ async def receive_incoming_email(
                 matched_case.estimated_cost = est_cost
             if not matched_case.requested_amount and req_amt is not None:
                 matched_case.requested_amount = req_amt
+            if ai_result.get("is_100_percent_verified") is True:
+                matched_case.status = "approved"
+            elif ai_result.get("status") and matched_case.status not in ("approved", "disbursed", "paid"):
+                matched_case.status = str(ai_result["status"]).lower()
 
     resolved_app_id = payload.application_id or (matched_case.case_number if matched_case else None)
 
-    # 9. Create database record
+    # 9. Create database record (no per-email ai_summary; documents stored in attachment_metadata)
     email_record = IncomingEmail(
         case_id=matched_case.id if matched_case else None,
         message_id=payload.message_id,
@@ -371,14 +390,49 @@ async def receive_incoming_email(
         attachment_count=len(serialized_attachments),
         application_id=resolved_app_id,
         raw_payload=raw_body_dict if raw_body_dict else None,
-        ai_summary=ai_result,
         received_at=received_timestamp,
     )
 
+    # 9b. Auto-generate & queue AI Reply email if payload did not explicitly disable auto-reply
+    auto_reply_record: Optional[OutgoingEmail] = None
+    if payload.ai_summary is None and isinstance(ai_result, dict) and ai_result.get("auto_reply_body"):
+        reply_to_addr = ai_service._extract_email_address(payload.sender)
+        if reply_to_addr and "@" in reply_to_addr:
+            reply_subj = str(
+                ai_result.get("auto_reply_subject")
+                or f"Re: {payload.subject or 'Hope Medical Assistance'} [{resolved_app_id or 'HOPE'}]"
+            )[:500]
+            if resolved_app_id and resolved_app_id not in reply_subj:
+                reply_subj = f"{reply_subj} [{resolved_app_id}]"[:500]
+            auto_reply_record = OutgoingEmail(
+                case_id=matched_case.id if matched_case else None,
+                application_id=resolved_app_id or "GENERAL",
+                recipient_email=reply_to_addr,
+                subject=reply_subj,
+                body_plain=str(ai_result["auto_reply_body"]),
+                reply_to_message_id=payload.message_id,
+                status="pending",
+                raw_payload={"auto_generated_by_ai": True, "model": ai_result.get("model_used")},
+            )
+
     try:
         db.add(email_record)
+        if auto_reply_record is not None:
+            db.add(auto_reply_record)
+        db.flush()
+
+        # 9c. Append ordered email primary keys to matched_case.email_exchanges
+        if matched_case is not None:
+            current_exchanges = list(matched_case.email_exchanges) if isinstance(matched_case.email_exchanges, list) else []
+            current_exchanges.append({"id": str(email_record.id), "direction": "incoming"})
+            if auto_reply_record is not None:
+                current_exchanges.append({"id": str(auto_reply_record.id), "direction": "outgoing"})
+            matched_case.email_exchanges = current_exchanges
+
         db.commit()
         db.refresh(email_record)
+        if auto_reply_record is not None:
+            db.refresh(auto_reply_record)
     except IntegrityError:
         # Concurrent request already inserted this message_id: return the existing record
         db.rollback()
@@ -426,6 +480,25 @@ async def receive_incoming_email(
         email_record.attachment_count,
         email_record.application_id or "none",
     )
+
+    # 10. If an AI auto-reply was queued and ZAPIER_OUTBOUND_WEBHOOK_URL is set, dispatch it
+    zapier_hook = os.getenv("ZAPIER_OUTBOUND_WEBHOOK_URL")
+    if auto_reply_record is not None and zapier_hook:
+        try:
+            requests.post(
+                zapier_hook.strip(),
+                json={
+                    "email_id": str(auto_reply_record.id),
+                    "application_id": auto_reply_record.application_id,
+                    "recipient_email": auto_reply_record.recipient_email,
+                    "subject": auto_reply_record.subject,
+                    "body": auto_reply_record.body_plain,
+                    "reply_to_message_id": auto_reply_record.reply_to_message_id,
+                },
+                timeout=5,
+            )
+        except Exception as exc:
+            logger.warning("Failed to trigger Zapier outbound webhook for auto-reply: %s", exc)
 
     return IncomingEmailResponse(
         status="received",
@@ -492,7 +565,6 @@ async def list_incoming_emails(
             attachment_metadata=r.attachment_metadata,
             attachment_count=r.attachment_count,
             application_id=r.application_id,
-            ai_summary=r.ai_summary,
             received_at=r.received_at,
             created_at=r.created_at,
             updated_at=r.updated_at,
@@ -504,7 +576,7 @@ async def list_incoming_emails(
 @router.patch(
     "/incoming/{email_id}",
     response_model=IncomingEmailListItem,
-    summary="Update AI summary or case linkage for an incoming email",
+    summary="Update case linkage or attachment metadata for an incoming email",
 )
 async def update_incoming_email(
     email_id: str,
@@ -549,8 +621,9 @@ async def update_incoming_email(
         record.case_id = matched.id
     if "application_id" in update_data:
         record.application_id = update_data["application_id"]
-    if "ai_summary" in update_data:
-        record.ai_summary = update_data["ai_summary"]
+    if "attachment_metadata" in update_data and update_data["attachment_metadata"] is not None:
+        record.attachment_metadata = update_data["attachment_metadata"]
+        record.attachment_count = len(update_data["attachment_metadata"])
 
     db.commit()
     db.refresh(record)
@@ -567,7 +640,6 @@ async def update_incoming_email(
         attachment_metadata=record.attachment_metadata,
         attachment_count=record.attachment_count,
         application_id=record.application_id,
-        ai_summary=record.ai_summary,
         received_at=record.received_at,
         created_at=record.created_at,
         updated_at=record.updated_at,
@@ -657,6 +729,11 @@ async def send_outbound_email(
 
     try:
         db.add(outgoing_record)
+        db.flush()
+        if matched_case is not None:
+            current_exchanges = list(matched_case.email_exchanges) if isinstance(matched_case.email_exchanges, list) else []
+            current_exchanges.append({"id": str(outgoing_record.id), "direction": "outgoing"})
+            matched_case.email_exchanges = current_exchanges
         db.commit()
         db.refresh(outgoing_record)
     except SQLAlchemyError:
@@ -993,12 +1070,14 @@ async def clear_all_emails(
 
     inc_res = db.execute(delete(IncomingEmail))
     out_res = db.execute(delete(OutgoingEmail))
+    case_res = db.execute(delete(Case))
     db.commit()
 
     return {
         "status": "cleared",
         "deleted_incoming": inc_res.rowcount or 0,
         "deleted_outgoing": out_res.rowcount or 0,
-        "message": "All incoming and outgoing emails have been cleared.",
+        "deleted_cases": case_res.rowcount or 0,
+        "message": "All incoming emails, outgoing emails, and cases have been cleared.",
     }
 

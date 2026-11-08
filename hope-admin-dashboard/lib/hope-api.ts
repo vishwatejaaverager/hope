@@ -64,6 +64,7 @@ export interface CaseRecord {
   overall_summary: string | null;
   next_action: string | null;
   pending_items: unknown;
+  email_exchanges: Array<{ id: string; direction: string }> | unknown;
   incoming_email_count: number;
   outgoing_email_count: number;
   created_at: string;
@@ -82,7 +83,6 @@ export interface IncomingEmailRecord {
   attachment_metadata: unknown;
   attachment_count: number;
   application_id: string | null;
-  ai_summary: unknown;
   received_at: string;
   created_at: string;
   updated_at: string;
@@ -105,9 +105,13 @@ export interface OutgoingEmailRecord {
 
 import { cookies } from "next/headers";
 
-const BACKEND_URL =
+export const BACKEND_URL =
   process.env.HOPE_BACKEND_URL?.replace(/\/$/, "") ||
   "https://hope-9dq5.onrender.com";
+
+export function getBackendUrl(): string {
+  return BACKEND_URL;
+}
 
 async function getAuthHeaders(): Promise<Record<string, string>> {
   const headers: Record<string, string> = {

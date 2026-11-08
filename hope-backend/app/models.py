@@ -68,6 +68,9 @@ class Case(Base):
     overall_summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     next_action: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     pending_items: Mapped[Optional[Any]] = mapped_column(JSON().with_variant(JSONB, "postgresql"), nullable=True)
+    email_exchanges: Mapped[Optional[Any]] = mapped_column(
+        JSON().with_variant(JSONB, "postgresql"), default=list, nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -98,7 +101,6 @@ class IncomingEmail(Base):
     attachment_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     application_id: Mapped[Optional[str]] = mapped_column(String(64), index=True, nullable=True)
     raw_payload: Mapped[Optional[Any]] = mapped_column(JSON().with_variant(JSONB, "postgresql"), nullable=True)
-    ai_summary: Mapped[Optional[Any]] = mapped_column(JSON().with_variant(JSONB, "postgresql"), nullable=True)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

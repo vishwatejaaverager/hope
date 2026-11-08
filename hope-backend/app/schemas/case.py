@@ -22,6 +22,7 @@ class CaseCreate(BaseModel):
     overall_summary: Optional[str] = None
     next_action: Optional[str] = Field(None, max_length=255)
     pending_items: Optional[Union[list[Any], dict[str, Any]]] = None
+    email_exchanges: Optional[list[Any]] = None
 
 
 class CaseUpdate(BaseModel):
@@ -40,6 +41,7 @@ class CaseUpdate(BaseModel):
     overall_summary: Optional[str] = None
     next_action: Optional[str] = Field(None, max_length=255)
     pending_items: Optional[Union[list[Any], dict[str, Any]]] = None
+    email_exchanges: Optional[list[Any]] = None
 
 
 class CaseResponse(BaseModel):
@@ -59,6 +61,7 @@ class CaseResponse(BaseModel):
     overall_summary: Optional[str] = None
     next_action: Optional[str] = None
     pending_items: Optional[Any] = None
+    email_exchanges: list[Any] = []
     incoming_email_count: int = 0
     outgoing_email_count: int = 0
     created_at: datetime
@@ -75,7 +78,7 @@ class CaseTimelineItem(BaseModel):
     body_snippet: Optional[str] = None
     status: Optional[str] = None
     timestamp: datetime
-    ai_summary: Optional[Any] = None
+    attachments: Optional[list[dict[str, Any]]] = None
 
 
 class CaseDetailResponse(CaseResponse):
@@ -85,3 +88,24 @@ class CaseDetailResponse(CaseResponse):
 class CaseLinkEmailRequest(BaseModel):
     incoming_email_id: Optional[str] = None
     outgoing_email_id: Optional[str] = None
+
+
+class CaseDisburseRequest(BaseModel):
+    recipient_email: Optional[str] = Field(None, description="Override recipient PayPal email (defaults to case.patient_email)")
+    amount: Optional[Decimal] = Field(None, description="Override payout amount in USD (defaults to requested_amount or estimated_cost)")
+    beneficiary_name: Optional[str] = Field(None, description="Override beneficiary name (defaults to case.patient_name)")
+
+
+class CaseDisburseResponse(BaseModel):
+    case_id: str
+    case_number: str
+    case_status: str
+    batch_id: str
+    batch_status: str
+    item_status: Optional[str] = None
+    amount: str
+    currency: str = "USD"
+    recipient_email: str
+    paid: bool = False
+    message: str
+
