@@ -6,6 +6,8 @@ import { pagesFor, type ReportPage } from '../page-titles';
 import type { SavedReport } from '../reports-store';
 import { Button, Menu, MenuItem } from './ui/ui';
 
+export type ActiveViewSection = 'reports' | 'cases' | 'emails';
+
 // Reports, each listing its pages. The open report shows its live pages (including unsaved
 // ones); the others show their saved pages. Double-click a report or page to rename it.
 export function ReportsSidebar({
@@ -13,8 +15,12 @@ export function ReportsSidebar({
   activeId,
   activePages,
   selectedPageId,
+  activeSection = 'reports',
+  casesCount = 0,
+  emailsCount = 0,
   editing,
   ready,
+  onSelectSection,
   onSelectReport,
   onSelectPage,
   onAddPage,
@@ -30,8 +36,12 @@ export function ReportsSidebar({
   activeId: string;
   activePages: ReportPage[];
   selectedPageId: string;
+  activeSection?: ActiveViewSection;
+  casesCount?: number;
+  emailsCount?: number;
   editing: boolean;
   ready: boolean;
+  onSelectSection?: (section: ActiveViewSection) => void;
   onSelectReport: (id: string) => void;
   onSelectPage: (reportId: string, pageId: string) => void;
   onAddPage: () => string | undefined;
@@ -77,8 +87,10 @@ export function ReportsSidebar({
                     type="button"
                     disabled={!ready}
                     onClick={() => {
-                      if (active) setExpanded((current) => ({ ...current, [report.id]: !open }));
-                      else {
+                      onSelectSection?.('reports');
+                      if (active && activeSection === 'reports') {
+                        setExpanded((current) => ({ ...current, [report.id]: !open }));
+                      } else {
                         setExpanded((current) => ({ ...current, [report.id]: true }));
                         onSelectReport(report.id);
                       }
@@ -86,10 +98,12 @@ export function ReportsSidebar({
                     onDoubleClick={() => setRenaming(report.id)}
                     aria-expanded={open}
                     className={`flex w-full items-center gap-3 rounded-full py-2.5 pl-4 pr-10 text-left text-[15px] transition-colors ${
-                      active ? 'font-semibold text-pp-navy' : 'text-pp-ink hover:bg-pp-canvas'
+                      active && activeSection === 'reports'
+                        ? 'font-semibold text-pp-navy'
+                        : 'text-pp-ink hover:bg-pp-canvas'
                     }`}
                   >
-                    <ReportIcon className={`size-5 shrink-0 ${active ? 'text-pp-blue' : ''}`} />
+                    <ReportIcon className={`size-5 shrink-0 ${active && activeSection === 'reports' ? 'text-pp-blue' : ''}`} />
                     <span className="truncate">{report.name}</span>
                   </button>
                 )}
@@ -139,7 +153,7 @@ export function ReportsSidebar({
               {open && (
                 <ul className="mb-2 ml-[26px] mt-1 space-y-0.5 border-l border-pp-border pl-3" aria-label={`${report.name} pages`}>
                   {pages.map((page) => {
-                    const selected = active && page.id === selectedPageId;
+                    const selected = active && activeSection === 'reports' && page.id === selectedPageId;
                     return (
                       <li key={page.id} className="group relative">
                         {renaming === page.id ? (
@@ -154,7 +168,10 @@ export function ReportsSidebar({
                           <button
                             type="button"
                             disabled={!ready}
-                            onClick={() => onSelectPage(report.id, page.id)}
+                            onClick={() => {
+                              onSelectSection?.('reports');
+                              onSelectPage(report.id, page.id);
+                            }}
                             onDoubleClick={() => active && editing && setRenaming(page.id)}
                             aria-current={selected ? 'page' : undefined}
                             title={active && editing ? 'Double-click to rename' : undefined}
@@ -199,6 +216,54 @@ export function ReportsSidebar({
             </li>
           );
         })}
+
+        {/* Separate Operations / Verification Category */}
+        <li className="pt-4">
+          <div className="mb-1.5 border-t border-pp-border pt-4 px-3 text-xs font-semibold uppercase tracking-wider text-pp-muted">
+            Verification &amp; Inbox
+          </div>
+          <div className="space-y-1">
+            <button
+              type="button"
+              onClick={() => onSelectSection?.('cases')}
+              className={`flex w-full items-center justify-between rounded-full py-2.5 px-4 text-left text-[15px] transition-colors ${
+                activeSection === 'cases'
+                  ? 'bg-pp-highlight font-semibold text-pp-blue'
+                  : 'text-pp-ink hover:bg-pp-canvas'
+              }`}
+            >
+              <span className="flex items-center gap-3 truncate">
+                <svg className="size-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                <span className="truncate">Medical Cases</span>
+              </span>
+              <span className="ml-2 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600">
+                {casesCount}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => onSelectSection?.('emails')}
+              className={`flex w-full items-center justify-between rounded-full py-2.5 px-4 text-left text-[15px] transition-colors ${
+                activeSection === 'emails'
+                  ? 'bg-pp-highlight font-semibold text-pp-blue'
+                  : 'text-pp-ink hover:bg-pp-canvas'
+              }`}
+            >
+              <span className="flex items-center gap-3 truncate">
+                <svg className="size-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75" />
+                </svg>
+                <span className="truncate">Email Communications</span>
+              </span>
+              <span className="ml-2 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600">
+                {emailsCount}
+              </span>
+            </button>
+          </div>
+        </li>
       </ul>
       <div className="border-t border-pp-border p-4">
         <Button variant="primary" className="w-full" onClick={onCreate}>

@@ -47,20 +47,6 @@ export function LoginForm() {
         </div>
       )}
 
-      {/* Official PayPal OAuth 2.0 Redirect Button */}
-      <a
-        href="/api/auth/login"
-        className="w-full flex items-center justify-center gap-2.5 py-2.5 px-4 rounded-lg bg-[#0070ba] hover:bg-[#005ea6] text-white font-semibold text-sm shadow-sm transition-colors"
-      >
-        <span>Log in with PayPal Sandbox</span>
-      </a>
-
-      <div className="relative flex items-center py-1">
-        <div className="grow border-t border-slate-200" />
-        <span className="mx-3 shrink text-xs text-slate-400">or sign in with Sandbox account</span>
-        <div className="grow border-t border-slate-200" />
-      </div>
-
       {/* Email & Password Form */}
       <form onSubmit={handleSubmit} className="space-y-4">
         <div>

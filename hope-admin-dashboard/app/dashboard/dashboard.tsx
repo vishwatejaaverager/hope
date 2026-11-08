@@ -42,7 +42,8 @@ import {
   type SavedReport,
 } from './reports-store';
 import { pagesFor, pageTitlesFor } from './page-titles';
-import { ReportsSidebar } from './components/sidebar';
+import { ReportsSidebar, type ActiveViewSection } from './components/sidebar';
+import { EmailCommunicationsPanel, MedicalCasesPanel } from './components/email-viewer';
 import { DashboardSkeleton } from './components/skeleton';
 import * as reportState from './report-state';
 import { buildAi } from './studio/ai';
@@ -87,6 +88,7 @@ function ReportsDashboard({ data, licenseKey, aiModels }: DashboardProps) {
   const [history, setHistory] = useState<StudioHistory>(NO_HISTORY);
   const [mode, setMode] = useState<AgStudioMode>('view');
   const [dialog, setDialog] = useState<DashboardDialog>(null);
+  const [activeSection, setActiveSection] = useState<ActiveViewSection>('reports');
 
   const { reports } = store;
   // The open report, as it was last saved.
@@ -122,7 +124,13 @@ function ReportsDashboard({ data, licenseKey, aiModels }: DashboardProps) {
   };
   const updateState = (next: (current: AgReportState) => AgReportState) => {
     const api = apiRef.current;
-    if (api) api.setState(next(api.getState()));
+    if (api) {
+      const updated = next(api.getState());
+      api.setState(updated);
+      setStudioState(updated);
+    } else {
+      setStudioState((prev) => next(prev ?? initialState));
+    }
   };
   const changeMode = (next: AgStudioMode) => {
     updateState((s) => reportState.withFiltersPanelFor(next, s));
@@ -220,8 +228,12 @@ function ReportsDashboard({ data, licenseKey, aiModels }: DashboardProps) {
           activeId={saved.id}
           activePages={pages}
           selectedPageId={state.selectedPageId}
+          activeSection={activeSection}
+          casesCount={data.cases.length}
+          emailsCount={data.emails.length}
           editing={editing}
-          ready={studioState !== null}
+          ready={true}
+          onSelectSection={setActiveSection}
           onSelectReport={openReport}
           onSelectPage={selectPage}
           onAddPage={() => (apiRef.current ? addPage() : undefined)}
@@ -238,24 +250,49 @@ function ReportsDashboard({ data, licenseKey, aiModels }: DashboardProps) {
         />
       }
     >
-      <ReportHeader
-        reportName={saved.name}
-        pageTitle={pages.find((p) => p.id === state.selectedPageId)?.title}
-        asOf={data.asOf}
-        editing={editing}
-        pageIsEmpty={studioState !== null && !reportState.pageHasWidgets(state)}
-        canUndo={history.canUndo}
-        canRedo={history.canRedo}
-        onUndo={() => apiRef.current?.undo()}
-        onRedo={() => apiRef.current?.redo()}
-        onSave={save}
-        onDiscard={discard}
-        onEditingChange={(next) =>
-          next ? changeMode('edit') : guard(() => changeMode('view'))
-        }
-      />
+      {activeSection === 'reports' ? (
+        <ReportHeader
+          reportName={saved.name}
+          pageTitle={pages.find((p) => p.id === state.selectedPageId)?.title}
+          asOf={data.asOf}
+          editing={editing}
+          pageIsEmpty={studioState !== null && !reportState.pageHasWidgets(state)}
+          canUndo={history.canUndo}
+          canRedo={history.canRedo}
+          onUndo={() => apiRef.current?.undo()}
+          onRedo={() => apiRef.current?.redo()}
+          onSave={save}
+          onDiscard={discard}
+          onEditingChange={(next) =>
+            next ? changeMode('edit') : guard(() => changeMode('view'))
+          }
+        />
+      ) : (
+        <div className="flex h-14 shrink-0 items-center justify-between border-b border-pp-border bg-white px-6">
+          <div className="flex items-center gap-2 text-sm">
+            <span className="font-semibold text-pp-muted">Verification &amp; Inbox</span>
+            <span className="text-pp-muted">/</span>
+            <span className="font-bold text-pp-navy">
+              {activeSection === 'emails' ? 'Email Communications' : 'Medical Cases'}
+            </span>
+          </div>
+          <span className="text-xs text-pp-muted">
+            Updated {new Date(data.asOf).toLocaleTimeString()}
+          </span>
+        </div>
+      )}
 
-      <div className="min-h-0 flex-1">
+      <div className="relative min-h-0 flex-1">
+        {activeSection === 'emails' && (
+          <div className="absolute inset-0 z-10 bg-white">
+            <EmailCommunicationsPanel emails={data.emails} />
+          </div>
+        )}
+        {activeSection === 'cases' && (
+          <div className="absolute inset-0 z-10 bg-white">
+            <MedicalCasesPanel cases={data.cases} emails={data.emails} />
+          </div>
+        )}
         {hasData(data) ? (
           <AgStudioProvider licenseKey={licenseKey} modules={ai ? [AgStudioAiModule] : undefined}>
             <AgStudio

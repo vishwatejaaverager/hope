@@ -100,17 +100,28 @@ export interface CaseRow {
   dateTime: string | null;
 }
 
+export interface EmailAttachmentItem {
+  filename?: string;
+  content_type?: string;
+  size?: number;
+  url?: string;
+}
+
 export interface EmailRow {
   id: string;
+  rawId: string;
   direction: "Incoming" | "Outgoing";
   applicationId: string;
   caseId: string;
   sender: string;
   recipient: string;
   subject: string;
+  bodyPlain: string;
+  bodyHtml: string | null;
   bodySnippet: string;
   aiSummaryText: string;
   attachmentCount: number;
+  attachments: EmailAttachmentItem[];
   status: string;
   messageId: string;
   date: string | null;
@@ -313,23 +324,41 @@ function mapCases(records: CaseRecord[]): CaseRow[] {
   });
 }
 
+function parseAttachments(val: unknown): EmailAttachmentItem[] {
+  if (!Array.isArray(val)) return [];
+  return val
+    .filter((item): item is Record<string, unknown> => !!item && typeof item === "object")
+    .map((item) => ({
+      filename: typeof item.filename === "string" ? item.filename : undefined,
+      content_type: typeof item.content_type === "string" ? item.content_type : undefined,
+      size: typeof item.size === "number" ? item.size : undefined,
+      url: typeof item.url === "string" ? item.url : undefined,
+    }));
+}
+
 function mapEmails(
   incoming: IncomingEmailRecord[],
   outgoing: OutgoingEmailRecord[],
 ): EmailRow[] {
   const incRows: EmailRow[] = incoming.map((em) => {
     const ts = em.received_at || em.created_at;
+    const bodyText = em.body_plain || "";
+    const parsedAtts = parseAttachments(em.attachment_metadata);
     return {
       id: `INC-${em.id}`,
+      rawId: em.id,
       direction: "Incoming",
       applicationId: em.application_id || "—",
       caseId: em.case_id || "—",
       sender: em.sender,
       recipient: em.recipient,
       subject: em.subject || "(No subject)",
-      bodySnippet: em.body_plain ? em.body_plain.slice(0, 160) : "—",
+      bodyPlain: bodyText || "(Empty email body)",
+      bodyHtml: em.body_html || null,
+      bodySnippet: bodyText ? bodyText.slice(0, 160) : "—",
       aiSummaryText: formatAiSummary(em.ai_summary),
-      attachmentCount: Number(em.attachment_count) || 0,
+      attachmentCount: Number(em.attachment_count) || parsedAtts.length,
+      attachments: parsedAtts,
       status: "RECEIVED",
       messageId: em.message_id,
       date: ts ? ts.slice(0, 10) : null,
@@ -341,17 +370,22 @@ function mapEmails(
 
   const outRows: EmailRow[] = outgoing.map((em) => {
     const ts = em.created_at;
+    const bodyText = em.body_plain || "";
     return {
       id: `OUT-${em.id}`,
+      rawId: em.id,
       direction: "Outgoing",
       applicationId: em.application_id || "—",
       caseId: em.case_id || "—",
       sender: "Hope Verification",
       recipient: em.recipient_email,
       subject: em.subject || "(No subject)",
-      bodySnippet: em.body_plain ? em.body_plain.slice(0, 160) : "—",
+      bodyPlain: bodyText || "(Empty email body)",
+      bodyHtml: em.body_html || null,
+      bodySnippet: bodyText ? bodyText.slice(0, 160) : "—",
       aiSummaryText: "Outbound verification / follow-up email",
       attachmentCount: 0,
+      attachments: [],
       status: (em.status || "pending").toUpperCase(),
       messageId: em.correlation_id || em.reply_to_message_id || "—",
       date: ts ? ts.slice(0, 10) : null,

@@ -886,3 +886,40 @@ async def update_email_status(
         updated_at=record.updated_at,
     )
 
+
+@router.delete(
+    "/clear",
+    summary="Clear all incoming and outgoing emails from the database",
+)
+async def clear_all_emails(
+    request: Request,
+    db: Session = Depends(get_db),
+    x_webhook_secret: Optional[str] = Header(None, alias="X-Webhook-Secret"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    secret: Optional[str] = Query(None),
+):
+    """Delete all stored incoming and outgoing email records."""
+    if not _authenticate_request(
+        request=request,
+        header_secret=x_webhook_secret,
+        auth_header=authorization,
+        query_secret=secret,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing webhook secret.",
+        )
+
+    from sqlalchemy import delete
+
+    inc_res = db.execute(delete(IncomingEmail))
+    out_res = db.execute(delete(OutgoingEmail))
+    db.commit()
+
+    return {
+        "status": "cleared",
+        "deleted_incoming": inc_res.rowcount or 0,
+        "deleted_outgoing": out_res.rowcount or 0,
+        "message": "All incoming and outgoing emails have been cleared.",
+    }
+

@@ -174,6 +174,7 @@ export function buildStudioData(data: DashboardData): AgDataSourcesDefinition {
           ["sender", "Sender", "textFormat"],
           ["recipient", "Recipient", "textFormat"],
           ["subject", "Subject", "textFormat"],
+          ["bodyPlain", "Email Body", "textFormat"],
           ["bodySnippet", "Email Snippet", "textFormat"],
           ["aiSummaryText", "AI Summary", "textFormat"],
           ["attachmentCount", "Attachments", "integerFormat"],
