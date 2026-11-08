@@ -70,8 +70,9 @@ def parse_flexible_datetime(val: Any) -> Optional[datetime]:
     return datetime.now(timezone.utc)
 
 # Common patterns for beneficiary application IDs:
-# e.g. APP-12345, APP_2026_001, BEN-9872, or UUID
+# e.g. CASE-2026-0001, APP-12345, APP_2026_001, BEN-9872, or UUID
 APP_ID_PATTERNS = [
+    re.compile(r"\b(CASE[-_][A-Za-z0-9-_]{3,32})\b", re.IGNORECASE),
     re.compile(r"\b(APP[-_][A-Za-z0-9-_]{3,32})\b", re.IGNORECASE),
     re.compile(r"\b(BEN[-_][A-Za-z0-9-_]{3,32})\b", re.IGNORECASE),
     re.compile(r"(?:application|case)\s*(?:id|#|number)?\s*[:=\s]\s*([A-Za-z0-9-_]{4,36})", re.IGNORECASE),
@@ -112,6 +113,8 @@ class IncomingEmailPayload(BaseModel):
     received_at: Optional[datetime] = None
     attachment_metadata: Optional[list[Union[AttachmentMetadata, dict[str, Any]]]] = None
     application_id: Optional[str] = Field(None, max_length=64)
+    case_id: Optional[str] = Field(None, max_length=64, description="Optional Case UUID or case_number")
+    ai_summary: Optional[Any] = Field(None, description="Optional structured or text AI summary of the email")
     webhook_secret: Optional[str] = None
 
     @model_validator(mode="before")
@@ -201,8 +204,35 @@ class IncomingEmailResponse(BaseModel):
     email_id: Optional[str] = None
     message_id: str
     application_id: Optional[str] = None
+    case_id: Optional[str] = None
     duplicate: bool = False
     message: str
+
+
+class IncomingEmailListItem(BaseModel):
+    id: str
+    case_id: Optional[str] = None
+    message_id: str
+    sender: str
+    recipient: str
+    subject: Optional[str] = None
+    body_plain: Optional[str] = None
+    body_html: Optional[str] = None
+    attachment_metadata: Optional[Any] = None
+    attachment_count: int = 0
+    application_id: Optional[str] = None
+    ai_summary: Optional[Any] = None
+    received_at: datetime
+    created_at: datetime
+    updated_at: datetime
+
+
+class UpdateIncomingEmailPayload(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    case_id: Optional[str] = Field(None, description="Case UUID or case_number to link")
+    application_id: Optional[str] = Field(None, max_length=64)
+    ai_summary: Optional[Any] = Field(None, description="AI summary (string or JSON object) for this email")
 
 
 class OutgoingEmailPayload(BaseModel):
@@ -211,6 +241,7 @@ class OutgoingEmailPayload(BaseModel):
     recipient_email: str = Field(..., description="Recipient hospital or contact email address", max_length=255)
     body: str = Field(..., description="Plain-text email body content")
     application_id: Optional[str] = Field("GENERAL", description="Beneficiary or case application ID", max_length=64)
+    case_id: Optional[str] = Field(None, description="Optional Case UUID or case_number", max_length=64)
     subject: Optional[str] = Field("Hospital Verification Request", description="Email subject", max_length=500)
     body_html: Optional[str] = Field(None, description="Optional HTML body content")
     reply_to_message_id: Optional[str] = Field(
@@ -295,6 +326,7 @@ class OutgoingEmailResponse(BaseModel):
     status: str
     email_id: str
     application_id: str
+    case_id: Optional[str] = None
     recipient_email: str
     subject: str
     reply_to_message_id: Optional[str] = None
@@ -305,6 +337,7 @@ class OutgoingEmailResponse(BaseModel):
 
 class OutgoingEmailListItem(BaseModel):
     id: str
+    case_id: Optional[str] = None
     application_id: str
     recipient_email: str
     subject: str

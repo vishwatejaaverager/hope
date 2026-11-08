@@ -47,6 +47,62 @@ export interface PayoutHistoryResponse {
   items: PayoutRecord[];
 }
 
+export interface CaseRecord {
+  id: string;
+  case_number: string;
+  patient_user_id: string | null;
+  patient_name: string | null;
+  patient_email: string | null;
+  medical_category: string | null;
+  treatment_description: string | null;
+  hospital_name: string | null;
+  estimated_cost: string | number | null;
+  requested_amount: string | number | null;
+  currency: string;
+  urgency: string;
+  status: string;
+  overall_summary: string | null;
+  next_action: string | null;
+  pending_items: unknown;
+  incoming_email_count: number;
+  outgoing_email_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface IncomingEmailRecord {
+  id: string;
+  case_id: string | null;
+  message_id: string;
+  sender: string;
+  recipient: string;
+  subject: string | null;
+  body_plain: string | null;
+  body_html: string | null;
+  attachment_metadata: unknown;
+  attachment_count: number;
+  application_id: string | null;
+  ai_summary: unknown;
+  received_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OutgoingEmailRecord {
+  id: string;
+  case_id: string | null;
+  application_id: string;
+  recipient_email: string;
+  subject: string;
+  body_plain: string;
+  body_html: string | null;
+  reply_to_message_id: string | null;
+  correlation_id: string | null;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
 import { cookies } from "next/headers";
 
 const BACKEND_URL =
@@ -56,6 +112,7 @@ const BACKEND_URL =
 async function getAuthHeaders(): Promise<Record<string, string>> {
   const headers: Record<string, string> = {
     Accept: "application/json",
+    "X-Webhook-Secret": process.env.EMAIL_WEBHOOK_SECRET || "hope@0926",
   };
   try {
     const cookieStore = await cookies();
@@ -108,4 +165,16 @@ export async function fetchDonations(limit = 200, offset = 0): Promise<DonationH
 
 export async function fetchPayouts(limit = 200, offset = 0): Promise<PayoutHistoryResponse> {
   return fetchFromBackend<PayoutHistoryResponse>(`/api/payouts/history?limit=${limit}&offset=${offset}`);
+}
+
+export async function fetchCases(limit = 100, offset = 0): Promise<CaseRecord[]> {
+  return fetchFromBackend<CaseRecord[]>(`/api/v1/cases?limit=${limit}&offset=${offset}`);
+}
+
+export async function fetchIncomingEmails(limit = 100, offset = 0): Promise<IncomingEmailRecord[]> {
+  return fetchFromBackend<IncomingEmailRecord[]>(`/api/v1/emails/incoming?limit=${limit}&offset=${offset}`);
+}
+
+export async function fetchOutgoingEmails(limit = 100, offset = 0): Promise<OutgoingEmailRecord[]> {
+  return fetchFromBackend<OutgoingEmailRecord[]>(`/api/v1/emails/outgoing?limit=${limit}&offset=${offset}`);
 }

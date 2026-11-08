@@ -1,4 +1,15 @@
-import { fetchDonations, fetchPayouts, type DonationRecord, type PayoutRecord } from "./hope-api";
+import {
+  fetchCases,
+  fetchDonations,
+  fetchIncomingEmails,
+  fetchOutgoingEmails,
+  fetchPayouts,
+  type CaseRecord,
+  type DonationRecord,
+  type IncomingEmailRecord,
+  type OutgoingEmailRecord,
+  type PayoutRecord,
+} from "./hope-api";
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -64,6 +75,48 @@ export interface StatusBreakdownRow {
   status: string;
   count: number;
   totalAmount: number;
+}
+
+export interface CaseRow {
+  id: string;
+  caseNumber: string;
+  patientName: string;
+  patientEmail: string;
+  medicalCategory: string;
+  hospitalName: string;
+  treatmentDescription: string;
+  estimatedCost: number;
+  requestedAmount: number;
+  currency: string;
+  urgency: string;
+  status: string;
+  overallSummary: string;
+  nextAction: string;
+  pendingItemsText: string;
+  incomingEmailCount: number;
+  outgoingEmailCount: number;
+  totalEmailCount: number;
+  date: string | null;
+  dateTime: string | null;
+}
+
+export interface EmailRow {
+  id: string;
+  direction: "Incoming" | "Outgoing";
+  applicationId: string;
+  caseId: string;
+  sender: string;
+  recipient: string;
+  subject: string;
+  bodySnippet: string;
+  aiSummaryText: string;
+  attachmentCount: number;
+  status: string;
+  messageId: string;
+  date: string | null;
+  dateTime: string | null;
+  isIncoming: boolean;
+  isOutgoing: boolean;
 }
 
 function mapDonations(records: DonationRecord[]): DonationRow[] {
@@ -205,12 +258,125 @@ function buildStatusBreakdown(donations: DonationRow[], payouts: PayoutRow[]): S
   return [...map.values()];
 }
 
+function formatAiSummary(val: unknown): string {
+  if (!val) return "—";
+  if (typeof val === "string") return val;
+  if (typeof val === "object") {
+    const obj = val as Record<string, unknown>;
+    if (typeof obj.summary === "string") return obj.summary;
+    try {
+      return JSON.stringify(val);
+    } catch {
+      return String(val);
+    }
+  }
+  return String(val);
+}
+
+function formatPendingItems(val: unknown): string {
+  if (!val) return "—";
+  if (Array.isArray(val)) return val.map(String).join(", ") || "—";
+  if (typeof val === "string") return val;
+  try {
+    return JSON.stringify(val);
+  } catch {
+    return "—";
+  }
+}
+
+function mapCases(records: CaseRecord[]): CaseRow[] {
+  return records.map((c) => {
+    const inc = Number(c.incoming_email_count) || 0;
+    const out = Number(c.outgoing_email_count) || 0;
+    return {
+      id: c.id,
+      caseNumber: c.case_number,
+      patientName: c.patient_name || "Unknown Patient",
+      patientEmail: c.patient_email || "—",
+      medicalCategory: c.medical_category || "general",
+      hospitalName: c.hospital_name || "—",
+      treatmentDescription: c.treatment_description || "—",
+      estimatedCost: Number(c.estimated_cost) || 0,
+      requestedAmount: Number(c.requested_amount) || 0,
+      currency: c.currency || "USD",
+      urgency: (c.urgency || "medium").toUpperCase(),
+      status: (c.status || "new").toUpperCase(),
+      overallSummary: c.overall_summary || "No summary yet",
+      nextAction: c.next_action || "—",
+      pendingItemsText: formatPendingItems(c.pending_items),
+      incomingEmailCount: inc,
+      outgoingEmailCount: out,
+      totalEmailCount: inc + out,
+      date: c.created_at ? c.created_at.slice(0, 10) : null,
+      dateTime: c.created_at || null,
+    };
+  });
+}
+
+function mapEmails(
+  incoming: IncomingEmailRecord[],
+  outgoing: OutgoingEmailRecord[],
+): EmailRow[] {
+  const incRows: EmailRow[] = incoming.map((em) => {
+    const ts = em.received_at || em.created_at;
+    return {
+      id: `INC-${em.id}`,
+      direction: "Incoming",
+      applicationId: em.application_id || "—",
+      caseId: em.case_id || "—",
+      sender: em.sender,
+      recipient: em.recipient,
+      subject: em.subject || "(No subject)",
+      bodySnippet: em.body_plain ? em.body_plain.slice(0, 160) : "—",
+      aiSummaryText: formatAiSummary(em.ai_summary),
+      attachmentCount: Number(em.attachment_count) || 0,
+      status: "RECEIVED",
+      messageId: em.message_id,
+      date: ts ? ts.slice(0, 10) : null,
+      dateTime: ts || null,
+      isIncoming: true,
+      isOutgoing: false,
+    };
+  });
+
+  const outRows: EmailRow[] = outgoing.map((em) => {
+    const ts = em.created_at;
+    return {
+      id: `OUT-${em.id}`,
+      direction: "Outgoing",
+      applicationId: em.application_id || "—",
+      caseId: em.case_id || "—",
+      sender: "Hope Verification",
+      recipient: em.recipient_email,
+      subject: em.subject || "(No subject)",
+      bodySnippet: em.body_plain ? em.body_plain.slice(0, 160) : "—",
+      aiSummaryText: "Outbound verification / follow-up email",
+      attachmentCount: 0,
+      status: (em.status || "pending").toUpperCase(),
+      messageId: em.correlation_id || em.reply_to_message_id || "—",
+      date: ts ? ts.slice(0, 10) : null,
+      dateTime: ts || null,
+      isIncoming: false,
+      isOutgoing: true,
+    };
+  });
+
+  return [...incRows, ...outRows].sort((a, b) => {
+    const da = a.dateTime ? new Date(a.dateTime).getTime() : 0;
+    const db = b.dateTime ? new Date(b.dateTime).getTime() : 0;
+    return db - da;
+  });
+}
+
 export async function getDashboardData(asOf = new Date()) {
   let donationsData = { count: 0, limit: 200, offset: 0, items: [] as DonationRecord[] };
   let payoutsData = { count: 0, limit: 200, offset: 0, items: [] as PayoutRecord[] };
+  let casesData: CaseRecord[] = [];
+  let incomingEmailsData: IncomingEmailRecord[] = [];
+  let outgoingEmailsData: OutgoingEmailRecord[] = [];
 
   try {
-    const [dRes, pRes] = await Promise.all([
+    const [dRes, pRes, cRes, incRes, outRes] = await Promise.all([
       fetchDonations(200).catch((e) => {
         console.warn("Could not fetch donations from Hope backend:", e.message);
         return { count: 0, limit: 200, offset: 0, items: [] };
@@ -219,9 +385,24 @@ export async function getDashboardData(asOf = new Date()) {
         console.warn("Could not fetch payouts from Hope backend:", e.message);
         return { count: 0, limit: 200, offset: 0, items: [] };
       }),
+      fetchCases(100).catch((e) => {
+        console.warn("Could not fetch cases from Hope backend:", e.message);
+        return [] as CaseRecord[];
+      }),
+      fetchIncomingEmails(100).catch((e) => {
+        console.warn("Could not fetch incoming emails from Hope backend:", e.message);
+        return [] as IncomingEmailRecord[];
+      }),
+      fetchOutgoingEmails(100).catch((e) => {
+        console.warn("Could not fetch outgoing emails from Hope backend:", e.message);
+        return [] as OutgoingEmailRecord[];
+      }),
     ]);
     donationsData = dRes;
     payoutsData = pRes;
+    casesData = cRes;
+    incomingEmailsData = incRes;
+    outgoingEmailsData = outRes;
   } catch (err) {
     console.error("Dashboard data fetch error:", err);
   }
@@ -231,6 +412,8 @@ export async function getDashboardData(asOf = new Date()) {
   const pooledFund = buildFundSummary(donations, payouts);
   const transactions = buildTransactions(donations, payouts);
   const statusBreakdown = buildStatusBreakdown(donations, payouts);
+  const cases = mapCases(casesData);
+  const emails = mapEmails(incomingEmailsData, outgoingEmailsData);
 
   return {
     asOf: asOf.toISOString(),
@@ -239,6 +422,8 @@ export async function getDashboardData(asOf = new Date()) {
     pooledFund,
     transactions,
     statusBreakdown,
+    cases,
+    emails,
   };
 }
 

@@ -142,9 +142,91 @@ const payouts: AgPageState = {
   },
 };
 
+// --- Medical Cases Page --------------------------------------------------------
+const cases: AgPageState = {
+  id: "cases",
+  widgets: {
+    "kpi-cases-count": kpi("Total Medical Cases", countd("cases.id")),
+    "kpi-cases-requested": kpi("Total Requested Support", sum("cases.requestedAmount")),
+    "kpi-cases-estimated": kpi("Total Estimated Treatment Cost", sum("cases.estimatedCost")),
+    "cases-grid": {
+      type: "grid",
+      dataMapping: {
+        cols: [
+          { id: "cases.caseNumber" },
+          { id: "cases.patientName" },
+          { id: "cases.patientEmail" },
+          { id: "cases.medicalCategory" },
+          { id: "cases.hospitalName" },
+          { id: "cases.urgency" },
+          { id: "cases.status" },
+          { id: "cases.requestedAmount" },
+          { id: "cases.estimatedCost" },
+          { id: "cases.overallSummary" },
+          { id: "cases.nextAction" },
+          { id: "cases.pendingItemsText" },
+          { id: "cases.totalEmailCount" },
+          { id: "cases.date" },
+        ],
+      },
+      format: title("Medical Assistance Cases & Living AI Summaries"),
+    },
+  },
+  widgetLayout: {
+    "kpi-cases-count": at(0, 0, 8, 7),
+    "kpi-cases-requested": at(8, 0, 8, 7),
+    "kpi-cases-estimated": at(16, 0, 8, 7),
+    "cases-grid": at(0, 7, 24, 22),
+  },
+};
+
+// --- Email Communications Page -------------------------------------------------
+const emails: AgPageState = {
+  id: "emails",
+  widgets: {
+    "kpi-emails-total": kpi("Total Emails Logged", countd("emails.id")),
+    "kpi-emails-attachments": kpi("Total Attachments Received", sum("emails.attachmentCount")),
+    "emails-by-direction-chart": {
+      type: "pie-chart",
+      dataMapping: {
+        categoryKey: [{ id: "emails.direction" }],
+        valueKey: [countd("emails.id")],
+      },
+      format: {
+        ...title("Emails by Direction"),
+        style: { theme: { common: { legend: { enabled: true } } } },
+      },
+    },
+    "emails-grid": {
+      type: "grid",
+      dataMapping: {
+        cols: [
+          { id: "emails.date" },
+          { id: "emails.direction" },
+          { id: "emails.applicationId" },
+          { id: "emails.sender" },
+          { id: "emails.recipient" },
+          { id: "emails.subject" },
+          { id: "emails.bodySnippet" },
+          { id: "emails.aiSummaryText" },
+          { id: "emails.attachmentCount" },
+          { id: "emails.status" },
+        ],
+      },
+      format: title("Inbound & Outbound Email Communications (Zapier / Hostinger)"),
+    },
+  },
+  widgetLayout: {
+    "kpi-emails-total": at(0, 0, 8, 7),
+    "kpi-emails-attachments": at(8, 0, 8, 7),
+    "emails-by-direction-chart": at(16, 0, 8, 7),
+    "emails-grid": at(0, 7, 24, 22),
+  },
+};
+
 export const dashboardReport: AgReportState = {
   selectedPageId: overview.id,
-  pages: [overview, donations, payouts],
+  pages: [overview, donations, payouts, cases, emails],
 };
 
 export const initialReport = dashboardReport;

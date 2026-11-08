@@ -18,7 +18,7 @@ export type SavedReport = {
 
 export type StoredReports = { reports: SavedReport[]; activeId: string };
 
-const STORAGE_KEY = 'hope-admin:reports:v1';
+const STORAGE_KEY = 'hope-admin:reports:v2';
 
 export const BUILT_IN_ID = 'hope-financial-overview';
 
@@ -27,6 +27,8 @@ const defaultPageTitles: Record<string, string> = {
   overview: 'Financial Overview',
   donations: 'Donations History',
   payouts: 'Beneficiary Payouts',
+  cases: 'Medical Cases',
+  emails: 'Email Communications',
 };
 
 export const defaultReport = (): SavedReport => ({

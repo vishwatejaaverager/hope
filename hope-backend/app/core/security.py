@@ -35,6 +35,58 @@ def verify_webhook_secret(provided_secret: Optional[str]) -> bool:
     return any(hmac.compare_digest(cleaned, s) for s in valid_secrets)
 
 
+def authenticate_request(
+    request: Any,
+    payload_secret: Optional[str] = None,
+    header_secret: Optional[str] = None,
+    zapier_secret: Optional[str] = None,
+    auth_header: Optional[str] = None,
+    query_secret: Optional[str] = None,
+    query_token: Optional[str] = None,
+) -> bool:
+    """Validate request using shared webhook secret or internal session token."""
+    direct = (
+        header_secret
+        or zapier_secret
+        or auth_header
+        or query_secret
+        or query_token
+        or payload_secret
+    )
+    if direct and verify_webhook_secret(direct):
+        return True
+
+    # Check case-insensitive raw request headers if available
+    headers = getattr(request, "headers", {})
+    for key in (
+        "x-webhook-secret",
+        "x-zapier-secret",
+        "webhook-secret",
+        "authorization",
+        "x-api-key",
+        "email-webhook-secret",
+        "email_webhook_secret",
+    ):
+        if key in headers and verify_webhook_secret(headers[key]):
+            return True
+
+    # Check bearer session token
+    auth_val = auth_header or (headers.get("authorization") if hasattr(headers, "get") else None)
+    if auth_val and auth_val.strip().lower().startswith("bearer "):
+        token = auth_val.strip()[7:].strip()
+        if verify_session_token(token) is not None:
+            return True
+
+    # Check admin dashboard session cookie
+    cookies = getattr(request, "cookies", {})
+    cookie_token = cookies.get("hope_admin_session") if hasattr(cookies, "get") else None
+    if cookie_token and verify_session_token(cookie_token) is not None:
+        return True
+
+    return False
+
+
+
 def _b64_encode(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).decode("utf-8").rstrip("=")
 

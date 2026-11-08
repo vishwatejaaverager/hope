@@ -11,12 +11,12 @@ const PROMPT_STARTERS: AgAiPromptStarter[] = [
     prompt: 'Summarise what this page shows: every widget, the fields it reads, and what stands out.',
   },
   {
-    label: 'Overdue invoices',
-    prompt: 'Which customers owe the most on overdue invoices?',
+    label: 'Urgent medical cases',
+    prompt: 'Which medical assistance cases have the highest urgency or requested amount, and what are their next actions?',
   },
   {
-    label: 'Revenue by month',
-    prompt: 'Add a chart of paid invoice revenue by month.',
+    label: 'Recent email communications',
+    prompt: 'Summarise the recent incoming and outgoing verification emails and their status.',
   },
 ];
 

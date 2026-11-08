@@ -105,7 +105,9 @@ def test_auth_me_authenticated_and_logout(client):
     assert logout_res.status_code == 200
 
 
-def test_login_credentials_success(client):
+def test_login_credentials_success(client, monkeypatch):
+    monkeypatch.setenv("ADMIN_EMAIL", "admin@hope.org")
+    monkeypatch.setenv("ADMIN_PASSWORD", "admin123")
     res = client.post(
         "/api/auth/login-credentials",
         json={"email": "admin@hope.org", "password": "admin123"},

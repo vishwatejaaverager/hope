@@ -22,13 +22,19 @@ const onCalendar = (tableId: string, fieldId: string, truncate?: "day"): AgRelat
 });
 
 export const hasData = (data: DashboardData) =>
-  data.donations.length > 0 || data.payouts.length > 0 || data.transactions.length > 0;
+  data.donations.length > 0 ||
+  data.payouts.length > 0 ||
+  data.transactions.length > 0 ||
+  data.cases.length > 0 ||
+  data.emails.length > 0;
 
 export function buildStudioData(data: DashboardData): AgDataSourcesDefinition {
   const dates = [
     ...data.donations.map((d) => d.date),
     ...data.payouts.map((p) => p.date),
     ...data.transactions.map((t) => t.date),
+    ...data.cases.map((c) => c.date),
+    ...data.emails.map((e) => e.date),
   ]
     .filter((d): d is string => !!d)
     .sort();
@@ -37,7 +43,7 @@ export function buildStudioData(data: DashboardData): AgDataSourcesDefinition {
 
   return {
     description:
-      "Hope medical crowdfunding platform financial analytics: donations, beneficiary payouts, and pooled fund balance.",
+      "Hope medical crowdfunding platform analytics: donations, beneficiary payouts, pooled fund balance, medical assistance cases, and email communications.",
     sources: [
       {
         id: "pooledFund",
@@ -127,11 +133,65 @@ export function buildStudioData(data: DashboardData): AgDataSourcesDefinition {
           ["totalAmount", "Total Amount", "currencyFormat"],
         ]),
       },
+      {
+        id: "cases",
+        name: "Medical Assistance Cases",
+        description: "Patient medical assistance applications, triage status, urgency, living AI summary, and requested funding.",
+        data: data.cases,
+        fields: fields([
+          ["id", "Case UUID", "textFormat", true],
+          ["caseNumber", "Case ID", "textFormat"],
+          ["patientName", "Patient Name", "textFormat"],
+          ["patientEmail", "Patient Email", "textFormat"],
+          ["medicalCategory", "Medical Category", "textFormat"],
+          ["hospitalName", "Hospital", "textFormat"],
+          ["treatmentDescription", "Treatment Description", "textFormat"],
+          ["estimatedCost", "Estimated Cost", "currencyFormat"],
+          ["requestedAmount", "Requested Amount", "currencyFormat"],
+          ["currency", "Currency", "textFormat", true],
+          ["urgency", "Urgency", "textFormat"],
+          ["status", "Case Status", "textFormat"],
+          ["overallSummary", "Living Case Summary", "textFormat"],
+          ["nextAction", "Next Action", "textFormat"],
+          ["pendingItemsText", "Pending Items", "textFormat"],
+          ["incomingEmailCount", "Incoming Emails", "integerFormat"],
+          ["outgoingEmailCount", "Outgoing Emails", "integerFormat"],
+          ["totalEmailCount", "Total Emails", "integerFormat"],
+          ["date", "Created Date", "dateFormat"],
+          ["dateTime", "Timestamp", "dateTimeFormat", true],
+        ]),
+      },
+      {
+        id: "emails",
+        name: "Email Communications",
+        description: "All inbound and outbound verification/patient emails processed via Zapier and Hostinger.",
+        data: data.emails,
+        fields: fields([
+          ["id", "Email ID", "textFormat", true],
+          ["direction", "Direction", "textFormat"],
+          ["applicationId", "Case / Application ID", "textFormat"],
+          ["caseId", "Linked Case UUID", "textFormat", true],
+          ["sender", "Sender", "textFormat"],
+          ["recipient", "Recipient", "textFormat"],
+          ["subject", "Subject", "textFormat"],
+          ["bodySnippet", "Email Snippet", "textFormat"],
+          ["aiSummaryText", "AI Summary", "textFormat"],
+          ["attachmentCount", "Attachments", "integerFormat"],
+          ["status", "Status", "textFormat"],
+          ["messageId", "Message ID", "textFormat"],
+          ["date", "Date", "dateFormat"],
+          ["dateTime", "Timestamp", "dateTimeFormat", true],
+          ["isIncoming", "Is Incoming", "booleanFormat"],
+          ["isOutgoing", "Is Outgoing", "booleanFormat"],
+        ]),
+      },
     ],
     relationships: [
       onCalendar("donations", "date"),
       onCalendar("payouts", "date"),
       onCalendar("transactions", "date", "day"),
+      onCalendar("cases", "date"),
+      onCalendar("emails", "date"),
     ],
     calendars: [
       {
