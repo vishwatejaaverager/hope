@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.core.security import verify_session_token, verify_webhook_secret
 from app.db import get_db
 from app.models import Case, EmailAttachment, IncomingEmail, OutgoingEmail
-from app.services import ai_service, smtp_service
+from app.services import ai_service, imap_service, smtp_service
 from app.schemas.email import (
     IncomingEmailListItem,
     IncomingEmailPayload,
@@ -983,11 +983,12 @@ async def dispatch_pending_emails(
             detail="Invalid or missing webhook secret.",
         )
 
+    use_smtp = smtp_service.smtp_configured() and not target_webhook_url
     zapier_hook = target_webhook_url or os.getenv("ZAPIER_OUTBOUND_WEBHOOK_URL") or DEFAULT_ZAPIER_OUTBOUND_HOOK
-    if not zapier_hook:
+    if not use_smtp and not zapier_hook:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="ZAPIER_OUTBOUND_WEBHOOK_URL is not set and target_webhook_url was not provided.",
+            detail="Neither SMTP nor ZAPIER_OUTBOUND_WEBHOOK_URL is configured, and target_webhook_url was not provided.",
         )
 
     pending_rows = db.execute(
@@ -996,6 +997,20 @@ async def dispatch_pending_emails(
 
     dispatched = 0
     for r in pending_rows:
+        if use_smtp:
+            # Direct SMTP with In-Reply-To/References so Gmail threads it under the original email
+            ok = smtp_service.send_threaded_email(
+                to_addr=r.recipient_email,
+                subject=r.subject,
+                body=r.body_plain or "",
+                in_reply_to=r.reply_to_message_id,
+            )
+            if ok:
+                r.status = "sent"
+                dispatched += 1
+            else:
+                logger.warning("SMTP dispatch failed for email_id=%s", r.id)
+            continue
         try:
             requests.post(
                 zapier_hook.strip(),
@@ -1007,6 +1022,8 @@ async def dispatch_pending_emails(
                     "subject": r.subject,
                     "body": r.body_plain,
                     "reply_to_message_id": r.reply_to_message_id,
+                    "in_reply_to": r.reply_to_message_id,
+                    "references": r.reply_to_message_id,
                     "correlation_id": r.correlation_id,
                 },
                 timeout=5,
@@ -1015,11 +1032,18 @@ async def dispatch_pending_emails(
         except Exception as e:
             logger.warning("Failed to dispatch email_id=%s to Zapier: %s", r.id, e)
 
+    if use_smtp:
+        try:
+            db.commit()
+        except SQLAlchemyError:
+            db.rollback()
+
+    channel = "SMTP (threaded replies)" if use_smtp else "Zapier"
     return {
         "status": "ok",
         "dispatched_count": dispatched,
         "total_pending": len(pending_rows),
-        "message": f"Successfully forwarded {dispatched} pending emails to Zapier.",
+        "message": f"Successfully sent {dispatched} of {len(pending_rows)} pending emails via {channel}.",
     }
 
 
@@ -1128,13 +1152,19 @@ async def clear_all_emails(
     inc_res = db.execute(delete(IncomingEmail))
     out_res = db.execute(delete(OutgoingEmail))
     case_res = db.execute(delete(Case))
+    db.execute(delete(EmailAttachment))
     db.commit()
+
+    # Also mark everything currently unread in the mailbox as read, so the IMAP poller
+    # does not re-import old emails as brand-new ones after a clear.
+    mailbox_marked = imap_service.mark_all_seen()
 
     return {
         "status": "cleared",
         "deleted_incoming": inc_res.rowcount or 0,
         "deleted_outgoing": out_res.rowcount or 0,
         "deleted_cases": case_res.rowcount or 0,
+        "mailbox_marked_read": mailbox_marked,
         "message": "All incoming emails, outgoing emails, and cases have been cleared.",
     }
 

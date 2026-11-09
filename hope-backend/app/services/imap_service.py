@@ -149,6 +149,26 @@ def poll_once() -> int:
     return handled
 
 
+def mark_all_seen() -> int:
+    """Mark every unread message in the INBOX as read without processing it. Never raises."""
+    if not imap_configured():
+        return 0
+    try:
+        with imaplib.IMAP4_SSL(os.environ["IMAP_HOST"].strip(), int(os.getenv("IMAP_PORT", "993")), timeout=20) as conn:
+            conn.login(os.environ["IMAP_USER"].strip(), os.environ["IMAP_PASSWORD"])
+            conn.select("INBOX")
+            status, data = conn.search(None, "UNSEEN")
+            if status != "OK":
+                return 0
+            nums = data[0].split()
+            for num in nums:
+                conn.store(num, "+FLAGS", "\\Seen")
+            return len(nums)
+    except Exception as exc:
+        logger.warning("Could not mark mailbox as read: %s", exc)
+        return 0
+
+
 def _loop() -> None:
     interval = int(os.getenv("IMAP_POLL_SECONDS", "30"))
     time.sleep(15)  # let the web server come up first

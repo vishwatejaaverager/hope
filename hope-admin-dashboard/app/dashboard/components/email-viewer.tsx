@@ -116,7 +116,7 @@ export function EmailCommunicationsPanel({ emails }: { emails: EmailRow[] }) {
             onClick={handleDispatchPending}
             className="rounded-lg border border-pp-blue/30 bg-blue-50/70 px-3 py-1.5 text-xs font-semibold text-pp-blue transition hover:bg-blue-100 disabled:opacity-50"
           >
-            {dispatching ? 'Dispatching...' : 'Push Pending to SMTP Zap'}
+            {dispatching ? 'Sending...' : 'Send Pending Replies'}
           </button>
           <button
             type="button"
