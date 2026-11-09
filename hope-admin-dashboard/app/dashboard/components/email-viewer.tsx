@@ -9,6 +9,7 @@ export function EmailCommunicationsPanel({ emails }: { emails: EmailRow[] }) {
   const [selectedId, setSelectedId] = useState<string | null>(emails[0]?.id ?? null);
   const [dispatching, setDispatching] = useState(false);
   const [dispatchMsg, setDispatchMsg] = useState<string | null>(null);
+  const [clearing, setClearing] = useState(false);
 
   async function handleDispatchPending() {
     setDispatching(true);
@@ -25,6 +26,30 @@ export function EmailCommunicationsPanel({ emails }: { emails: EmailRow[] }) {
       setDispatchMsg(err instanceof Error ? err.message : 'Failed to dispatch pending emails.');
     } finally {
       setDispatching(false);
+    }
+  }
+
+  async function handleClearEmailsAndCases() {
+    if (!window.confirm('Clear all Incoming Emails, Outgoing Emails, and Medical Cases? (Donations & Payouts will NOT be touched)')) {
+      return;
+    }
+    setClearing(true);
+    setDispatchMsg(null);
+    try {
+      const res = await fetch('/api/emails/clear', { method: 'DELETE' });
+      const data = await res.json();
+      if (!res.ok) {
+        setDispatchMsg(data.detail || 'Failed to clear emails and cases.');
+      } else {
+        setDispatchMsg(
+          `Cleared ${data.deleted_cases ?? 0} cases, ${data.deleted_incoming ?? 0} incoming, ${data.deleted_outgoing ?? 0} outgoing. Reloading...`,
+        );
+        window.location.reload();
+      }
+    } catch (err) {
+      setDispatchMsg(err instanceof Error ? err.message : 'Failed to clear emails and cases.');
+    } finally {
+      setClearing(false);
     }
   }
 
@@ -92,6 +117,14 @@ export function EmailCommunicationsPanel({ emails }: { emails: EmailRow[] }) {
             className="rounded-lg border border-pp-blue/30 bg-blue-50/70 px-3 py-1.5 text-xs font-semibold text-pp-blue transition hover:bg-blue-100 disabled:opacity-50"
           >
             {dispatching ? 'Dispatching...' : 'Push Pending to SMTP Zap'}
+          </button>
+          <button
+            type="button"
+            disabled={clearing}
+            onClick={handleClearEmailsAndCases}
+            className="rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-700 transition hover:bg-red-100 disabled:opacity-50"
+          >
+            {clearing ? 'Clearing...' : 'Clear All Emails & Cases'}
           </button>
           <span>
             Total Attachments:{' '}
@@ -311,6 +344,7 @@ export function MedicalCasesPanel({
 }) {
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(cases[0]?.id ?? null);
   const [disbursingId, setDisbursingId] = useState<string | null>(null);
+  const [clearingCases, setClearingCases] = useState(false);
   const [disburseResult, setDisburseResult] = useState<{
     caseId: string;
     ok: boolean;
@@ -318,6 +352,21 @@ export function MedicalCasesPanel({
   } | null>(null);
 
   const selectedCase = cases.find((c) => c.id === selectedCaseId) ?? cases[0] ?? null;
+
+  async function handleClearAllCasesAndEmails() {
+    if (!window.confirm('Clear all Medical Cases, Incoming Emails, and Outgoing Emails? (Donations & Payouts will NOT be touched)')) {
+      return;
+    }
+    setClearingCases(true);
+    try {
+      const res = await fetch('/api/emails/clear', { method: 'DELETE' });
+      if (res.ok) {
+        window.location.reload();
+      }
+    } finally {
+      setClearingCases(false);
+    }
+  }
 
   async function handleDisburse(c: CaseRow) {
     setDisbursingId(c.id);
@@ -390,8 +439,21 @@ export function MedicalCasesPanel({
   return (
     <div className="grid h-full min-h-0 grid-cols-12 bg-white">
       {/* Left: Cases List */}
-      <div className="col-span-5 overflow-y-auto border-r border-pp-border">
-        <ul className="divide-y divide-slate-100">
+      <div className="col-span-5 flex flex-col overflow-hidden border-r border-pp-border">
+        <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-5 py-3">
+          <span className="text-xs font-bold uppercase tracking-wider text-slate-600">
+            Medical Cases ({cases.length})
+          </span>
+          <button
+            type="button"
+            disabled={clearingCases}
+            onClick={handleClearAllCasesAndEmails}
+            className="rounded-md border border-red-200 bg-red-50 px-2.5 py-1 text-[11px] font-semibold text-red-700 transition hover:bg-red-100 disabled:opacity-50"
+          >
+            {clearingCases ? 'Clearing...' : 'Clear All Cases & Emails'}
+          </button>
+        </div>
+        <ul className="flex-1 divide-y divide-slate-100 overflow-y-auto">
           {cases.map((c) => {
             const isSelected = selectedCase?.id === c.id;
             return (

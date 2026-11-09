@@ -340,7 +340,7 @@ async def receive_incoming_email(
             matched_case = Case(
                 case_number=candidate_case_num,
                 patient_name=ai_result.get("patient_name"),
-                patient_email=ai_result.get("patient_email") or payload.sender,
+                patient_email=ai_service._extract_email_address(ai_result.get("patient_email") or payload.sender),
                 medical_category=ai_result.get("medical_category") or "general",
                 treatment_description=ai_result.get("treatment_description"),
                 hospital_name=ai_result.get("hospital_name"),
