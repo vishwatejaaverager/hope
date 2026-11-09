@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.core.security import verify_session_token, verify_webhook_secret
 from app.db import get_db
 from app.models import Case, IncomingEmail, OutgoingEmail
-from app.services import ai_service
+from app.services import ai_service, smtp_service
 from app.schemas.email import (
     IncomingEmailListItem,
     IncomingEmailPayload,
@@ -491,9 +491,25 @@ async def receive_incoming_email(
         email_record.application_id or "none",
     )
 
-    # 10. If an AI auto-reply was queued, dispatch it to Zapier Catch Hook
+    # 10a. Prefer direct SMTP (sets In-Reply-To/References so Gmail threads it as a reply)
+    sent_via_smtp = False
+    if auto_reply_record is not None and smtp_service.smtp_configured():
+        sent_via_smtp = smtp_service.send_threaded_email(
+            to_addr=auto_reply_record.recipient_email,
+            subject=auto_reply_record.subject,
+            body=auto_reply_record.body_plain or "",
+            in_reply_to=auto_reply_record.reply_to_message_id,
+        )
+        if sent_via_smtp:
+            try:
+                auto_reply_record.status = "sent"
+                db.commit()
+            except SQLAlchemyError:
+                db.rollback()
+
+    # 10b. Otherwise fall back to the Zapier Catch Hook
     zapier_hook = os.getenv("ZAPIER_OUTBOUND_WEBHOOK_URL") or DEFAULT_ZAPIER_OUTBOUND_HOOK
-    if auto_reply_record is not None and zapier_hook:
+    if auto_reply_record is not None and zapier_hook and not sent_via_smtp:
         try:
             requests.post(
                 zapier_hook.strip(),
