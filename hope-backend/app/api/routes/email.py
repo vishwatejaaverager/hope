@@ -29,6 +29,7 @@ from app.schemas.email import (
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_ZAPIER_OUTBOUND_HOOK = "https://hooks.zapier.com/hooks/catch/29325202/49x1egu/"
 router = APIRouter(prefix="/api/v1/emails", tags=["emails"])
 
 
@@ -481,8 +482,8 @@ async def receive_incoming_email(
         email_record.application_id or "none",
     )
 
-    # 10. If an AI auto-reply was queued and ZAPIER_OUTBOUND_WEBHOOK_URL is set, dispatch it
-    zapier_hook = os.getenv("ZAPIER_OUTBOUND_WEBHOOK_URL")
+    # 10. If an AI auto-reply was queued, dispatch it to Zapier Catch Hook
+    zapier_hook = os.getenv("ZAPIER_OUTBOUND_WEBHOOK_URL") or DEFAULT_ZAPIER_OUTBOUND_HOOK
     if auto_reply_record is not None and zapier_hook:
         try:
             requests.post(
@@ -490,6 +491,7 @@ async def receive_incoming_email(
                 json={
                     "email_id": str(auto_reply_record.id),
                     "application_id": auto_reply_record.application_id,
+                    "to": auto_reply_record.recipient_email,
                     "recipient_email": auto_reply_record.recipient_email,
                     "subject": auto_reply_record.subject,
                     "body": auto_reply_record.body_plain,
@@ -761,7 +763,7 @@ async def send_outbound_email(
     )
 
     # If Zapier outbound webhook is configured, notify it immediately for instant sending
-    zapier_hook = os.getenv("ZAPIER_OUTBOUND_WEBHOOK_URL")
+    zapier_hook = os.getenv("ZAPIER_OUTBOUND_WEBHOOK_URL") or DEFAULT_ZAPIER_OUTBOUND_HOOK
     if zapier_hook:
         try:
             requests.post(
@@ -769,6 +771,7 @@ async def send_outbound_email(
                 json={
                     "email_id": str(outgoing_record.id),
                     "application_id": outgoing_record.application_id,
+                    "to": outgoing_record.recipient_email,
                     "recipient_email": outgoing_record.recipient_email,
                     "subject": outgoing_record.subject,
                     "body": outgoing_record.body_plain,
@@ -931,7 +934,7 @@ async def dispatch_pending_emails(
             detail="Invalid or missing webhook secret.",
         )
 
-    zapier_hook = target_webhook_url or os.getenv("ZAPIER_OUTBOUND_WEBHOOK_URL")
+    zapier_hook = target_webhook_url or os.getenv("ZAPIER_OUTBOUND_WEBHOOK_URL") or DEFAULT_ZAPIER_OUTBOUND_HOOK
     if not zapier_hook:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -950,6 +953,7 @@ async def dispatch_pending_emails(
                 json={
                     "email_id": str(r.id),
                     "application_id": r.application_id,
+                    "to": r.recipient_email,
                     "recipient_email": r.recipient_email,
                     "subject": r.subject,
                     "body": r.body_plain,
