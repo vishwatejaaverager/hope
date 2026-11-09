@@ -7,6 +7,26 @@ export function EmailCommunicationsPanel({ emails }: { emails: EmailRow[] }) {
   const [filter, setFilter] = useState<'all' | 'Incoming' | 'Outgoing'>('all');
   const [search, setSearch] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(emails[0]?.id ?? null);
+  const [dispatching, setDispatching] = useState(false);
+  const [dispatchMsg, setDispatchMsg] = useState<string | null>(null);
+
+  async function handleDispatchPending() {
+    setDispatching(true);
+    setDispatchMsg(null);
+    try {
+      const res = await fetch('/api/emails/dispatch-pending', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) {
+        setDispatchMsg(data.detail || 'Set ZAPIER_OUTBOUND_WEBHOOK_URL on Render to push pending emails.');
+      } else {
+        setDispatchMsg(data.message || `Dispatched ${data.dispatched_count} pending email(s).`);
+      }
+    } catch (err) {
+      setDispatchMsg(err instanceof Error ? err.message : 'Failed to dispatch pending emails.');
+    } finally {
+      setDispatching(false);
+    }
+  }
 
   const filtered = emails.filter((em) => {
     if (filter !== 'all' && em.direction !== filter) return false;
@@ -60,6 +80,19 @@ export function EmailCommunicationsPanel({ emails }: { emails: EmailRow[] }) {
         </div>
 
         <div className="flex items-center gap-4 text-xs text-slate-500">
+          {dispatchMsg && (
+            <span className="rounded bg-blue-50 px-2.5 py-1 text-[11px] font-medium text-pp-blue">
+              {dispatchMsg}
+            </span>
+          )}
+          <button
+            type="button"
+            disabled={dispatching}
+            onClick={handleDispatchPending}
+            className="rounded-lg border border-pp-blue/30 bg-blue-50/70 px-3 py-1.5 text-xs font-semibold text-pp-blue transition hover:bg-blue-100 disabled:opacity-50"
+          >
+            {dispatching ? 'Dispatching...' : 'Push Pending to SMTP Zap'}
+          </button>
           <span>
             Total Attachments:{' '}
             <strong className="text-slate-800">
@@ -479,9 +512,28 @@ export function MedicalCasesPanel({
             </div>
 
             <div>
-              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500">
-                Linked Emails ({caseEmails.length})
-              </h3>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                  Email Exchanges ({caseEmails.length})
+                </h3>
+                {selectedCase.emailExchanges.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-1">
+                    {selectedCase.emailExchanges.map((ex, idx) => (
+                      <span
+                        key={`${ex.id}-${idx}`}
+                        title={`${ex.direction}: ${ex.id}`}
+                        className={`rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold ${
+                          ex.direction === 'incoming'
+                            ? 'bg-emerald-100 text-emerald-800'
+                            : 'bg-blue-100 text-blue-800'
+                        }`}
+                      >
+                        #{idx + 1} {ex.direction === 'incoming' ? 'IN' : 'OUT'}:{ex.id.slice(0, 6)}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
               {caseEmails.length === 0 ? (
                 <p className="mt-2 text-xs text-slate-400">No emails linked to this case yet.</p>
               ) : (

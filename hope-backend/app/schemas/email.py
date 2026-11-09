@@ -246,6 +246,10 @@ class IncomingEmailResponse(BaseModel):
     case_id: Optional[str] = None
     duplicate: bool = False
     message: str
+    outgoing_email_id: Optional[str] = None
+    auto_reply_recipient: Optional[str] = None
+    auto_reply_subject: Optional[str] = None
+    auto_reply_body: Optional[str] = None
 
 
 class IncomingEmailListItem(BaseModel):

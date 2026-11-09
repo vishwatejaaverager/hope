@@ -508,6 +508,10 @@ async def receive_incoming_email(
         case_id=str(email_record.case_id) if email_record.case_id else None,
         duplicate=False,
         message="Email webhook processed and stored successfully.",
+        outgoing_email_id=str(auto_reply_record.id) if auto_reply_record else None,
+        auto_reply_recipient=auto_reply_record.recipient_email if auto_reply_record else None,
+        auto_reply_subject=auto_reply_record.subject if auto_reply_record else None,
+        auto_reply_body=auto_reply_record.body_plain if auto_reply_record else None,
     )
 
 
