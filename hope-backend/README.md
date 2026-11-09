@@ -59,3 +59,29 @@ alembic upgrade head   # run all database migrations (donations, payouts)
 pytest -v tests/
 ```
 
+
+## Approved-case email and payout workflow
+
+Run `alembic upgrade head` before starting the updated backend. The migration adds
+`cases.paypal_email` and a unique case link on payouts; contact email remains separate.
+
+- Approval (email triage or the case API) asks the contact for the beneficiary's
+  PayPal email if it has not been explicitly supplied.
+- A reply such as `My PayPal email is beneficiary@example.com` saves it. A bare
+  email address is accepted when replying to the request for PayPal details.
+- With approval, a confirmed PayPal email and a positive USD `requested_amount`,
+  the workflow automatically submits that amount. It never substitutes the total
+  hospital estimate for the assistance amount.
+- Each case reserves one payout with frozen recipient/amount and a stable PayPal
+  request ID. Retries reuse it. Pending payments remain `payout_processing`;
+  only PayPal item `SUCCESS` marks the case `disbursed`.
+- Follow-up emails or the case disbursement endpoint reconcile the existing payout.
+  This does not add a scheduled payment-status poller.
+- Approval updates use SMTP when configured, otherwise the configured Zapier hook;
+  undelivered messages remain in the outgoing queue.
+- OpenRouter replies are conversational without internal status reports. Missing
+  keys/provider failures use a labelled heuristic fallback in the outgoing email's
+  metadata. The fallback cannot verify documents or automatically approve a case.
+
+Existing paid cases without a case-linked payout require manual reconciliation;
+this migration intentionally does not infer historical payment links.

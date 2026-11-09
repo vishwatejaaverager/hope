@@ -22,7 +22,7 @@ from app.schemas.case import (
     CaseTimelineItem,
     CaseUpdate,
 )
-from app.services import ai_service, paypal_service
+from app.services import ai_service, paypal_service, case_workflow
 from app.services.paypal_service import PayPalError
 
 logger = logging.getLogger(__name__)
@@ -86,6 +86,7 @@ def _build_case_response(c: Case) -> CaseResponse:
         patient_user_id=c.patient_user_id,
         patient_name=c.patient_name,
         patient_email=c.patient_email,
+        paypal_email=c.paypal_email,
         medical_category=c.medical_category,
         treatment_description=c.treatment_description,
         hospital_name=c.hospital_name,
@@ -195,6 +196,7 @@ def create_case(
         patient_user_id=payload.patient_user_id.strip() if payload.patient_user_id else None,
         patient_name=payload.patient_name.strip() if payload.patient_name else None,
         patient_email=payload.patient_email.strip() if payload.patient_email else None,
+        paypal_email=payload.paypal_email,
         medical_category=payload.medical_category.strip() if payload.medical_category else None,
         treatment_description=payload.treatment_description,
         hospital_name=payload.hospital_name.strip() if payload.hospital_name else None,
@@ -245,6 +247,11 @@ def create_case(
         db.rollback()
         logger.exception("Database error creating case")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create case.")
+
+    payment_reply = case_workflow.process_approved_case(db, new_case)
+    if payment_reply:
+        case_workflow.notify_case_contact(db, new_case, payment_reply)
+    db.commit()
 
     logger.info("Created new case: id=%s, case_number=%s", new_case.id, new_case.case_number)
     return _build_case_response(new_case)
@@ -359,6 +366,11 @@ def update_case(
         logger.exception("Database error updating case: id=%s", case_row.id)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to update case.")
 
+    payment_reply = case_workflow.process_approved_case(db, case_row)
+    if payment_reply:
+        case_workflow.notify_case_contact(db, case_row, payment_reply)
+    db.commit()
+
     logger.info("Updated case id=%s, status=%s", case_row.id, case_row.status)
     return _build_case_response(case_row)
 
@@ -450,108 +462,29 @@ def disburse_case_payout(
     if not case_row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found.")
 
-    raw_email = (payload.recipient_email if payload and payload.recipient_email else None) or case_row.patient_email
-    recipient_email = ai_service._extract_email_address(raw_email or "")
-    if not recipient_email or "@" not in recipient_email:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Valid recipient_email is required to disburse funds.",
-        )
-
-    payout_amount = (
-        (payload.amount if payload and payload.amount is not None else None)
-        or case_row.requested_amount
-        or case_row.estimated_cost
-    )
-    if not payout_amount or payout_amount <= 0:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="A positive payout amount is required (set requested_amount or pass amount in payload).",
-        )
-
-    beneficiary_name = (
-        (payload.beneficiary_name if payload and payload.beneficiary_name else None)
-        or case_row.patient_name
-        or "Hope Beneficiary"
-    )
-    amount_str = f"{payout_amount:.2f}"
-
-    try:
-        created = paypal_service.create_payout(
-            recipient_email,
-            amount_str,
-            f"Hope medical assistance payout for {case_row.case_number} ({beneficiary_name})",
-        )
-    except PayPalError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.message)
-
-    batch_id = created.get("batch_header", {}).get("payout_batch_id")
-    if not batch_id:
-        raise HTTPException(status_code=502, detail="PayPal did not return a payout batch ID")
-
-    try:
-        data = paypal_service.get_payout(batch_id)
-    except PayPalError:
-        data = created
-
-    header = data.get("batch_header", {})
-    batch_status = header.get("batch_status", "PENDING")
-    items = data.get("items") or []
-    item = items[0] if items else {}
-    item_status = item.get("transaction_status")
-    paid = item_status == "SUCCESS"
-
-    # Persist Payout record and update Case status
-    payout_row = Payout(
-        beneficiary_name=beneficiary_name,
-        recipient_email=recipient_email,
-        amount=payout_amount,
-        currency="USD",
-        payment_provider="paypal",
-        paypal_batch_id=batch_id,
-        paypal_item_id=item.get("payout_item_id"),
-        paypal_transaction_id=item.get("transaction_id"),
-        batch_status=batch_status,
-        item_status=item_status,
-        raw_response=data,
-    )
-    case_row.status = "disbursed"
-    case_row.next_action = f"Funds disbursed via PayPal (Batch {batch_id})"
-
-    # Queue confirmation email to beneficiary
-    confirm_email = OutgoingEmail(
-        case_id=case_row.id,
-        application_id=case_row.case_number,
-        recipient_email=recipient_email,
-        subject=f"Payout Disbursed (${amount_str}) - [{case_row.case_number}]",
-        body_plain=(
-            f"Dear {beneficiary_name},\n\n"
-            f"Your medical assistance payout of ${amount_str} USD for case {case_row.case_number} "
-            f"has been sent via PayPal (Batch ID: {batch_id}).\n\n"
-            "Wishing you a speedy recovery,\nHope Medical Foundation"
-        ),
-        status="pending",
-    )
-
-    try:
-        db.add(payout_row)
-        db.add(confirm_email)
-        db.commit()
-    except SQLAlchemyError:
-        db.rollback()
-        logger.exception("Could not record case disbursement for case %s", case_row.case_number)
-
+    if case_row.status not in {'approved', 'payout_processing', 'disbursed', 'paid'}:
+        raise HTTPException(status_code=409, detail="Only approved cases can receive payouts.")
+    existing = db.execute(select(Payout).where(Payout.case_id == case_row.id)).scalar_one_or_none()
+    if payload and existing is None:
+        if payload.recipient_email:
+            email = case_workflow.extract_paypal_email(f"PayPal: {payload.recipient_email}")
+            if not email:
+                raise HTTPException(status_code=400, detail="A valid beneficiary PayPal email is required.")
+            case_row.paypal_email = email
+        if payload.amount is not None:
+            case_row.requested_amount = payload.amount
+    message = case_workflow.process_approved_case(db, case_row)
+    db.commit()
+    payout = db.execute(select(Payout).where(Payout.case_id == case_row.id)).scalar_one_or_none()
+    if payout is None:
+        raise HTTPException(status_code=400, detail=message)
+    if payout.batch_status == 'REQUESTED':
+        raise HTTPException(status_code=502, detail=message)
     return CaseDisburseResponse(
-        case_id=str(case_row.id),
-        case_number=case_row.case_number,
-        case_status=case_row.status,
-        batch_id=batch_id,
-        batch_status=batch_status,
-        item_status=item_status,
-        amount=amount_str,
-        currency="USD",
-        recipient_email=recipient_email,
-        paid=paid,
-        message=f"Disbursed ${amount_str} USD to {recipient_email} via PayPal (Batch: {batch_id}).",
+        case_id=str(case_row.id), case_number=case_row.case_number,
+        case_status=case_row.status, batch_id=payout.paypal_batch_id,
+        batch_status=payout.batch_status, item_status=payout.item_status,
+        amount=f"{payout.amount:.2f}", currency=payout.currency,
+        recipient_email=payout.recipient_email,
+        paid=payout.item_status == 'SUCCESS', message=message,
     )
-

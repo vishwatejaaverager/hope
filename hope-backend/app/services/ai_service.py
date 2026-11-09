@@ -150,48 +150,40 @@ def _heuristic_fallback_analysis(
         pending_items.append("medical_prescription_or_admission_note")
 
     has_any_docs = att_count > 0 or mentions_attaching
-    is_verified = len(pending_items) == 0 and has_any_docs
-    verification_score = 100 if is_verified else (70 if att_count >= 2 else (45 if has_any_docs else 15))
+    # Keyword matches cannot establish document authenticity or approve spending.
+    is_verified = False
+    verification_score = 70 if att_count >= 2 else (45 if has_any_docs else 15)
 
-    if is_verified:
-        status = "approved"
-        next_action = "100% Verified — Ready to disburse payout to beneficiary"
-    elif has_any_docs:
+    if has_any_docs:
         status = "under_review"
-        next_action = f"Request remaining documents: {', '.join(pending_items)}"
+        next_action = f"Request remaining documents: {', '.join(pending_items)}" if pending_items else "Review submitted documents"
     else:
         status = "awaiting_documents"
         next_action = "Send auto-reply requesting hospital estimate, medical report, and government ID"
 
     patient_name = (existing_case_context or {}).get("patient_name") or _extract_name_from_sender(sender) or "Applicant"
     auto_reply_subject = _format_threaded_reply_subject(subject)
-    if is_verified:
-        auto_reply_body = (
-            f"Dear {patient_name},\n\n"
-            "Thank you for submitting your medical and identification documents.\n\n"
-            "--- CASE VERIFICATION STATUS ---\n"
-            f"• Case Summary: {updated_case_summary}\n"
-            "• Pending Documents: None (100% Verified)\n"
-            f"• Next Action: {next_action}\n"
-            "--------------------------------\n\n"
-            "Your case is now APPROVED and queued for immediate fund disbursement to your registered account.\n\n"
-            "Warm regards,\nHope Medical Verification Team"
-        )
+    readable_items = {
+        'hospital_treatment_estimate': 'the hospital’s treatment estimate or bill',
+        'patient_government_id': 'the patient’s government ID',
+        'medical_prescription_or_admission_note': 'a medical prescription or admission note',
+    }
+    if pending_items:
+        missing = '; '.join(readable_items.get(item, item.replace('_', ' ')) for item in pending_items)
+        reply = f"To continue reviewing your application, please reply with {missing}."
     else:
-        missing_str = ", ".join(item.replace("_", " ") for item in pending_items)
-        auto_reply_body = (
-            f"Dear {patient_name},\n\n"
-            "Thank you for reaching out to Hope Medical Foundation. We have received your message and updated your case file.\n\n"
-            "--- CASE VERIFICATION STATUS ---\n"
-            f"• Case Summary: {updated_case_summary}\n"
-            f"• Pending Documents: {missing_str}\n"
-            f"• Next Action: {next_action}\n"
-            "--------------------------------\n\n"
-            "Please reply to this email with the pending document(s) listed above. Once received and 100% verified, we will immediately process your payout.\n\n"
-            "Warm regards,\nHope Medical Verification Team"
-        )
+        reply = "We have received the documents you mentioned. Our team needs to review them before confirming approval."
+    if att_count:
+        acknowledgement = f"Thank you for sending {', '.join(att_names)}."
+    else:
+        acknowledgement = "Thank you for your message about medical assistance."
+    auto_reply_body = (
+        f"Hi {patient_name},\n\n{acknowledgement} {reply}\n\n"
+        "Warm regards,\nHope Medical Team"
+    )
 
     return {
+        "model_used": "heuristic_fallback",
         "intent": "document_submission" if att_count > 0 else "initial_application",
         "patient_name": patient_name,
         "patient_email": (existing_case_context or {}).get("patient_email") or _extract_email_address(sender),
@@ -206,7 +198,7 @@ def _heuristic_fallback_analysis(
         "is_100_percent_verified": is_verified,
         "document_verification_notes": (
             f"Analyzed {att_count} attachment(s) ({', '.join(att_names)}). "
-            + ("All required documents verified." if is_verified else f"Missing: {', '.join(pending_items)}.")
+            + ("Documents require review." if not pending_items else f"Missing: {', '.join(pending_items)}.")
         ),
         "overall_summary": updated_case_summary,
         "next_action": next_action,
@@ -277,7 +269,7 @@ def analyze_incoming_email(
         "- requested_amount: numeric financial aid requested in USD if mentioned, else null\n"
         "- urgency: one of ['low', 'medium', 'high', 'critical']\n"
         "- verification_score: integer 0 to 100 indicating how complete and authentic the medical/ID documentation is\n"
-        "- is_100_percent_verified: boolean (true ONLY when official hospital cost estimate/bill AND patient ID/medical proof have been submitted and verified with no pending items left. Note: IMAP email triggers may strip attachment URLs from metadata even when files are attached; if the sender states in the email body that they are attaching/submitting the required documents now—and not merely promising to send them later—count those documents as submitted)\n"
+        "- is_100_percent_verified: boolean (true ONLY when official hospital cost estimate/bill AND patient ID/medical proof have been submitted and verified with no pending items left. Never treat filenames or a sender’s claim of attachment as verification; if actual readable evidence is unavailable, keep the case under_review)\n"
         "- document_verification_notes: detailed findings from inspecting the attachments/documents\n"
         "- status: one of ['new', 'awaiting_documents', 'under_review', 'approved', 'rejected'] (set to 'approved' if is_100_percent_verified is true)\n"
         "- overall_summary: comprehensive living summary of all email exchanges in the case so far (combining existing_case_context and this new email)\n"
@@ -285,7 +277,7 @@ def analyze_incoming_email(
         "- extracted_documents: list of strings describing attachments/documents received so far\n"
         "- pending_items: list of strings for documents/verifications still missing (empty list [] if 100% verified)\n"
         "- auto_reply_subject: polite, clear subject line for the automatic reply email back to the sender\n"
-        "- auto_reply_body: empathetic plain-text reply email to the patient/sender that explicitly includes the updated overall_summary, pending_items, and next_action\n"
+        "- auto_reply_body: natural, empathetic plain-text reply addressing the latest message using case history. Ask only for genuinely missing information. Do not paste internal summaries, scores, field names, or status-report templates. Never say funds were sent; the payment workflow adds factual payment instructions after approval\n"
         "Respond ONLY with raw JSON and no markdown fences."
     )
 
@@ -358,23 +350,6 @@ def analyze_incoming_email(
                 merged["status"] = "approved"
                 merged["verification_score"] = 100
                 merged["pending_items"] = []
-
-            # Guarantee the reply email explicitly includes overall_summary, pending_items, and next_action
-            summary_str = str(merged.get("overall_summary") or "Case received and under review.")
-            pending_list = merged.get("pending_items") if isinstance(merged.get("pending_items"), list) else []
-            pending_str = ", ".join(str(x) for x in pending_list) if pending_list else "None (100% Verified)"
-            action_str = str(merged.get("next_action") or "Review submitted documents")
-
-            base_reply = str(merged.get("auto_reply_body") or "").strip()
-            status_block = (
-                "\n\n--- CASE VERIFICATION STATUS ---\n"
-                f"• Case Summary: {summary_str}\n"
-                f"• Pending Documents: {pending_str}\n"
-                f"• Next Action: {action_str}\n"
-                "--------------------------------"
-            )
-            if "CASE VERIFICATION STATUS" not in base_reply:
-                merged["auto_reply_body"] = f"{base_reply}{status_block}" if base_reply else status_block.strip()
 
             # Force strict 'Re: <Original Subject>' so Gmail threads the reply into the same conversation
             merged["auto_reply_subject"] = _format_threaded_reply_subject(subject)

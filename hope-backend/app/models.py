@@ -31,6 +31,8 @@ class Donation(Base):
 class Payout(Base):
     __tablename__ = "payouts"
 
+    case_id: Mapped[Optional[uuid.UUID]] = mapped_column(Uuid, ForeignKey("cases.id"), unique=True, nullable=True)
+
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     beneficiary_name: Mapped[Optional[str]] = mapped_column(String(255))
     recipient_email: Mapped[str] = mapped_column(String(255))
@@ -54,6 +56,7 @@ class Case(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     case_number: Mapped[str] = mapped_column(String(32), unique=True, index=True, nullable=False)
+    paypal_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     patient_user_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     patient_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     patient_email: Mapped[Optional[str]] = mapped_column(String(255), index=True, nullable=True)

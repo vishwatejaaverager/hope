@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.core.security import verify_session_token, verify_webhook_secret
 from app.db import get_db
 from app.models import Case, EmailAttachment, IncomingEmail, OutgoingEmail
-from app.services import ai_service, imap_service, smtp_service
+from app.services import ai_service, imap_service, smtp_service, case_workflow
 from app.schemas.email import (
     IncomingEmailListItem,
     IncomingEmailPayload,
@@ -310,6 +310,7 @@ async def receive_incoming_email(
             "case_number": matched_case.case_number,
             "patient_name": matched_case.patient_name,
             "patient_email": matched_case.patient_email,
+            "paypal_email": matched_case.paypal_email,
             "medical_category": matched_case.medical_category,
             "hospital_name": matched_case.hospital_name,
             "estimated_cost": str(matched_case.estimated_cost) if matched_case.estimated_cost else None,
@@ -379,10 +380,19 @@ async def receive_incoming_email(
                 matched_case.estimated_cost = est_cost
             if not matched_case.requested_amount and req_amt is not None:
                 matched_case.requested_amount = req_amt
-            if ai_result.get("is_100_percent_verified") is True:
+            if ai_result.get("is_100_percent_verified") is True and matched_case.status not in ("payout_processing", "disbursed", "paid"):
                 matched_case.status = "approved"
-            elif ai_result.get("status") and matched_case.status not in ("approved", "disbursed", "paid"):
+            elif ai_result.get("status") and matched_case.status not in ("approved", "payout_processing", "disbursed", "paid"):
                 matched_case.status = str(ai_result["status"]).lower()
+
+    if matched_case and not matched_case.paypal_email:
+        # Only payment details supplied by this case's contact can set the beneficiary.
+        contact = ai_service._extract_email_address(payload.sender).lower()
+        if contact == (matched_case.patient_email or "").lower():
+            matched_case.paypal_email = case_workflow.extract_paypal_email(
+                payload.body_plain,
+                awaiting_email=(existing_context or {}).get('next_action') == 'Request beneficiary PayPal email',
+            )
 
     resolved_app_id = payload.application_id or (matched_case.case_number if matched_case else None)
 
@@ -492,6 +502,13 @@ async def receive_incoming_email(
         email_record.attachment_count,
         email_record.application_id or "none",
     )
+
+    if matched_case is not None and payload.ai_summary is None:
+        payment_reply = case_workflow.process_approved_case(db, matched_case)
+        if payment_reply and auto_reply_record is not None:
+            name = matched_case.patient_name or 'there'
+            auto_reply_record.body_plain = f"Hi {name},\n\n{payment_reply}\n\nCase: {matched_case.case_number}\n\nWarm regards,\nHope Medical Team"
+        db.commit()
 
     # 10a. Prefer direct SMTP (sets In-Reply-To/References so Gmail threads it as a reply)
     sent_via_smtp = False

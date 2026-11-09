@@ -10,6 +10,7 @@ class CaseCreate(BaseModel):
     case_number: Optional[str] = Field(None, max_length=32, description="Optional custom case ID (auto-generated if omitted)")
     patient_user_id: Optional[str] = Field(None, max_length=64)
     patient_name: Optional[str] = Field(None, max_length=255)
+    paypal_email: Optional[str] = Field(None, max_length=255, pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
     patient_email: Optional[str] = Field(None, max_length=255)
     medical_category: Optional[str] = Field(None, max_length=64, description="e.g. upcoming_surgery, ongoing_hospitalization")
     treatment_description: Optional[str] = None
@@ -29,6 +30,7 @@ class CaseUpdate(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     patient_name: Optional[str] = Field(None, max_length=255)
+    paypal_email: Optional[str] = Field(None, max_length=255, pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
     patient_email: Optional[str] = Field(None, max_length=255)
     medical_category: Optional[str] = Field(None, max_length=64)
     treatment_description: Optional[str] = None
@@ -49,6 +51,7 @@ class CaseResponse(BaseModel):
     case_number: str
     patient_user_id: Optional[str] = None
     patient_name: Optional[str] = None
+    paypal_email: Optional[str] = Field(None, max_length=255, pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
     patient_email: Optional[str] = None
     medical_category: Optional[str] = None
     treatment_description: Optional[str] = None
@@ -91,7 +94,7 @@ class CaseLinkEmailRequest(BaseModel):
 
 
 class CaseDisburseRequest(BaseModel):
-    recipient_email: Optional[str] = Field(None, description="Override recipient PayPal email (defaults to case.patient_email)")
+    recipient_email: Optional[str] = Field(None, description="Override recipient PayPal email (defaults to the confirmed case.paypal_email)")
     amount: Optional[Decimal] = Field(None, description="Override payout amount in USD (defaults to requested_amount or estimated_cost)")
     beneficiary_name: Optional[str] = Field(None, description="Override beneficiary name (defaults to case.patient_name)")
 

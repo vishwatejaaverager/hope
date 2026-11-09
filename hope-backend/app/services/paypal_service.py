@@ -142,9 +142,9 @@ def capture_order(order_id: str) -> dict:
     raise error
 
 
-def create_payout(receiver_email: str, amount: str, note: str, currency: str = "USD") -> dict:
+def create_payout(receiver_email: str, amount: str, note: str, currency: str = "USD", request_id: str | None = None) -> dict:
     """Send a single-item Payouts batch (Sandbox testing of merchant -> beneficiary)."""
-    batch_id = f"HOPE-{uuid.uuid4().hex[:16]}"
+    batch_id = request_id or f"HOPE-{uuid.uuid4().hex[:16]}"
     payload = {
         "sender_batch_header": {
             "sender_batch_id": batch_id,
