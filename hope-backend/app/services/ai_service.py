@@ -1,7 +1,6 @@
-"""AI Triage, Multimodal Document Verification, Auto-Reply & Embedding Service powered by OpenRouter."""
+"""AI Triage, Multimodal Document Verification & Auto-Reply Service powered by OpenRouter."""
 import json
 import logging
-import math
 import os
 import re
 from decimal import Decimal, InvalidOperation
@@ -15,7 +14,6 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_EMBEDDINGS_URL = "https://openrouter.ai/api/v1/embeddings"
 
 # Free multimodal vision models on OpenRouter (fallback chain)
 DEFAULT_VISION_MODEL = "openrouter/free"
@@ -51,43 +49,6 @@ def _extract_email_address(sender: str) -> str:
     if "<" in sender and ">" in sender:
         return sender.split("<", 1)[-1].split(">", 1)[0].strip()
     return sender.strip()
-
-
-def generate_text_embedding(text: str, dims: int = 64) -> list[float]:
-    """Generate a compact vector embedding for document/case text.
-
-    Tries OpenRouter Embeddings API first if configured, and falls back to a deterministic
-    normalized bag-of-ngrams vector so embeddings always work offline/in tests without extra dependencies.
-    """
-    cleaned = (text or "").strip()
-    if not cleaned:
-        return [0.0] * dims
-
-    # Deterministic local semantic n-gram hash embedding (fast, zero-cost, always available)
-    vec = [0.0] * dims
-    tokens = re.findall(r"[a-z0-9$]+", cleaned.lower())
-    for tok in tokens:
-        h = hash(tok)
-        idx = abs(h) % dims
-        sign = 1.0 if (h & 1) == 0 else -1.0
-        vec[idx] += sign
-
-    norm = math.sqrt(sum(v * v for v in vec))
-    if norm > 0:
-        vec = [round(v / norm, 5) for v in vec]
-    return vec
-
-
-def cosine_similarity(vec_a: list[float], vec_b: list[float]) -> float:
-    """Compute cosine similarity between two embedding vectors."""
-    if not vec_a or not vec_b or len(vec_a) != len(vec_b):
-        return 0.0
-    dot = sum(a * b for a, b in zip(vec_a, vec_b))
-    norm_a = math.sqrt(sum(a * a for a in vec_a))
-    norm_b = math.sqrt(sum(b * b for b in vec_b))
-    if norm_a == 0 or norm_b == 0:
-        return 0.0
-    return round(dot / (norm_a * norm_b), 4)
 
 
 def _heuristic_fallback_analysis(
@@ -177,8 +138,12 @@ def _heuristic_fallback_analysis(
         auto_reply_subject = f"Application Approved & Verified - {subject or 'Hope Medical Assistance'}"
         auto_reply_body = (
             f"Dear {patient_name},\n\n"
-            "Thank you for submitting your medical and identification documents. Our AI Verification System "
-            "has completed a 100% verification of your hospital cost estimate and patient records.\n\n"
+            "Thank you for submitting your medical and identification documents.\n\n"
+            "--- CASE VERIFICATION STATUS ---\n"
+            f"• Case Summary: {updated_case_summary}\n"
+            "• Pending Documents: None (100% Verified)\n"
+            f"• Next Action: {next_action}\n"
+            "--------------------------------\n\n"
             "Your case is now APPROVED and queued for immediate fund disbursement to your registered account.\n\n"
             "Warm regards,\nHope Medical Verification Team"
         )
@@ -188,13 +153,14 @@ def _heuristic_fallback_analysis(
         auto_reply_body = (
             f"Dear {patient_name},\n\n"
             "Thank you for reaching out to Hope Medical Foundation. We have received your message and updated your case file.\n\n"
-            f"To complete our verification and approve your financial assistance, please reply to this email with the following pending item(s):\n"
-            f"- {missing_str}\n\n"
-            "Once received and verified, we will immediately process your payout.\n\n"
+            "--- CASE VERIFICATION STATUS ---\n"
+            f"• Case Summary: {updated_case_summary}\n"
+            f"• Pending Documents: {missing_str}\n"
+            f"• Next Action: {next_action}\n"
+            "--------------------------------\n\n"
+            "Please reply to this email with the pending document(s) listed above. Once received and 100% verified, we will immediately process your payout.\n\n"
             "Warm regards,\nHope Medical Verification Team"
         )
-
-    doc_text_for_embedding = f"{patient_name} | {category} | {updated_case_summary} | {', '.join(att_names)}"
 
     return {
         "intent": "document_submission" if att_count > 0 else "initial_application",
@@ -213,14 +179,12 @@ def _heuristic_fallback_analysis(
             f"Analyzed {att_count} attachment(s) ({', '.join(att_names)}). "
             + ("All required documents verified." if is_verified else f"Missing: {', '.join(pending_items)}.")
         ),
-        "summary": email_summary,
         "overall_summary": updated_case_summary,
         "next_action": next_action,
         "extracted_documents": att_names,
         "pending_items": pending_items,
         "auto_reply_subject": auto_reply_subject,
         "auto_reply_body": auto_reply_body,
-        "document_embedding": generate_text_embedding(doc_text_for_embedding),
     }
 
 
@@ -282,13 +246,12 @@ def analyze_incoming_email(
         "- is_100_percent_verified: boolean (true ONLY when official hospital cost estimate/bill AND patient ID/medical proof have been submitted and verified with no pending items left)\n"
         "- document_verification_notes: detailed findings from inspecting the attachments/documents\n"
         "- status: one of ['new', 'awaiting_documents', 'under_review', 'approved', 'rejected'] (set to 'approved' if is_100_percent_verified is true)\n"
-        "- summary: 1-2 sentence summary of THIS email\n"
-        "- overall_summary: comprehensive living summary of the entire case combining existing_case_context and this new email\n"
+        "- overall_summary: comprehensive living summary of all email exchanges in the case so far (combining existing_case_context and this new email)\n"
         "- next_action: clear next action for the case officer or payout system\n"
         "- extracted_documents: list of strings describing attachments/documents received so far\n"
         "- pending_items: list of strings for documents/verifications still missing (empty list [] if 100% verified)\n"
         "- auto_reply_subject: polite, clear subject line for the automatic reply email back to the sender\n"
-        "- auto_reply_body: complete, empathetic plain-text reply email to the patient/sender confirming what was received, stating the current verification status, and either listing any remaining pending_items or confirming that their case is 100% verified and approved for payout\n"
+        "- auto_reply_body: empathetic plain-text reply email to the patient/sender that explicitly includes the updated overall_summary, pending_items, and next_action\n"
         "Respond ONLY with raw JSON and no markdown fences."
     )
 
@@ -362,12 +325,24 @@ def analyze_incoming_email(
                 merged["verification_score"] = 100
                 merged["pending_items"] = []
 
-            merged["model_used"] = model_name
-            embed_source = (
-                f"{merged.get('patient_name') or ''} | {merged.get('hospital_name') or ''} | "
-                f"{merged.get('overall_summary') or ''} | {merged.get('document_verification_notes') or ''}"
+            # Guarantee the reply email explicitly includes overall_summary, pending_items, and next_action
+            summary_str = str(merged.get("overall_summary") or "Case received and under review.")
+            pending_list = merged.get("pending_items") if isinstance(merged.get("pending_items"), list) else []
+            pending_str = ", ".join(str(x) for x in pending_list) if pending_list else "None (100% Verified)"
+            action_str = str(merged.get("next_action") or "Review submitted documents")
+
+            base_reply = str(merged.get("auto_reply_body") or "").strip()
+            status_block = (
+                "\n\n--- CASE VERIFICATION STATUS ---\n"
+                f"• Case Summary: {summary_str}\n"
+                f"• Pending Documents: {pending_str}\n"
+                f"• Next Action: {action_str}\n"
+                "--------------------------------"
             )
-            merged["document_embedding"] = generate_text_embedding(embed_source)
+            if "CASE VERIFICATION STATUS" not in base_reply:
+                merged["auto_reply_body"] = f"{base_reply}{status_block}" if base_reply else status_block.strip()
+
+            merged["model_used"] = model_name
             return merged
         except Exception as exc:
             logger.warning("OpenRouter model %s failed, trying next fallback: %s", model_name, exc)
