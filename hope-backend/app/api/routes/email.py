@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.core.security import verify_session_token, verify_webhook_secret
 from app.db import get_db
-from app.models import Case, IncomingEmail, OutgoingEmail
+from app.models import Case, EmailAttachment, IncomingEmail, OutgoingEmail
 from app.services import ai_service, smtp_service
 from app.schemas.email import (
     IncomingEmailListItem,
@@ -280,6 +280,8 @@ async def receive_incoming_email(
             clean_doc["content_type"] = raw_dict["content_type"]
         if raw_dict.get("size") is not None:
             clean_doc["size"] = raw_dict["size"]
+        if raw_dict.get("extracted_text"):
+            clean_doc["extracted_text"] = str(raw_dict["extracted_text"])[:3000]
         serialized_attachments.append(clean_doc)
 
     # 4. Normalize received_at timestamp
@@ -541,6 +543,26 @@ async def receive_incoming_email(
         auto_reply_recipient=auto_reply_record.recipient_email if auto_reply_record else None,
         auto_reply_subject=auto_reply_record.subject if auto_reply_record else None,
         auto_reply_body=auto_reply_record.body_plain if auto_reply_record else None,
+    )
+
+
+@router.get(
+    "/attachments/{attachment_id}",
+    summary="Download an email attachment (unguessable UUID acts as the access token)",
+)
+async def download_attachment(attachment_id: str, db: Session = Depends(get_db)):
+    try:
+        att_uuid = uuid.UUID(attachment_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Attachment not found.")
+    record = db.get(EmailAttachment, att_uuid)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Attachment not found.")
+    safe_name = (record.filename or "attachment").replace('"', "")
+    return Response(
+        content=record.data,
+        media_type=record.content_type or "application/octet-stream",
+        headers={"Content-Disposition": f'inline; filename="{safe_name}"'},
     )
 
 

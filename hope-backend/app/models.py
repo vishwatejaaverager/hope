@@ -3,7 +3,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Optional
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, Numeric, String, Text, Uuid, func
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, LargeBinary, Numeric, String, Text, Uuid, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -108,6 +108,21 @@ class IncomingEmail(Base):
     )
 
     case: Mapped[Optional["Case"]] = relationship("Case", back_populates="incoming_emails")
+
+
+class EmailAttachment(Base):
+    """Raw attachment bytes downloaded from the mailbox over IMAP (served via an unguessable UUID URL)."""
+
+    __tablename__ = "email_attachments"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    message_id: Mapped[Optional[str]] = mapped_column(String(255), index=True, nullable=True)
+    filename: Mapped[str] = mapped_column(String(500), nullable=False)
+    content_type: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    size: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
 
 
 class OutgoingEmail(Base):

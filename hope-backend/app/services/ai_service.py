@@ -125,7 +125,8 @@ def _heuristic_fallback_analysis(
         updated_case_summary = f"Patient inquiry ({category}): {snippet}"
 
     # Determine verification completeness (accounting for future-tense promises like "will send ... as soon as")
-    combined_names = " ".join(att_names).lower() + " " + lower + " " + prev_summary.lower()
+    doc_text = " ".join(str(a.get("extracted_text") or "") for a in att_list).lower()
+    combined_names = " ".join(att_names).lower() + " " + lower + " " + prev_summary.lower() + " " + doc_text
     deferred_estimate = bool(re.search(r"will\s+send[^.]*?(?:estimate|bill|invoice)", lower))
     deferred_id = bool(re.search(r"will\s+send[^.]*?(?:id|passport|aadhaar|license)", lower))
 
@@ -223,6 +224,11 @@ def _extract_image_urls(attachment_metadata: Optional[list[dict[str, Any]]]) -> 
         if not isinstance(att, dict):
             continue
         url = att.get("url") or att.get("attachment_url") or att.get("file_url") or att.get("file")
+        ctype = str(att.get("content_type") or "").lower()
+        fname = str(att.get("filename") or "").lower()
+        is_image = ctype.startswith("image/") or fname.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif"))
+        if ctype and not ctype.startswith("image/") and not is_image:
+            continue  # vision models only accept images; PDFs/text are handled via extracted_text
         if isinstance(url, str) and url.startswith(("http://", "https://")):
             urls.append(url.strip())
     return urls
