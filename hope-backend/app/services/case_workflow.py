@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Case, Payout
-from app.services import paypal_service
+from app.services import paypal_service, approval_policy
 from app.services.paypal_service import PayPalError
 
 EMAIL_RE = r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+"
@@ -44,6 +44,14 @@ def process_approved_case(db: Session, case: Case) -> str | None:
     if payout is None:
         if case.status in {'disbursed', 'paid'}:
             return 'This case is already marked as paid. Our team will review its existing payment record before taking any further action.'
+        if (case.approval_source not in approval_policy.TRUSTED_APPROVALS
+                or (case.approval_source == approval_policy.DOCUMENT_CHECKS and (
+                    case.verification_issues or
+                    {item.get('document_type') for item in (case.verification_evidence or [])} != set(approval_policy.REQUIRED)
+                ))):
+            case.status = 'under_review'
+            case.next_action = 'Verify supporting documents before authorizing payment'
+            return approval_policy.REVIEW_MESSAGE
         if not case.paypal_email:
             case.next_action = 'Request beneficiary PayPal email'
             return 'Your case is approved. Please reply with the email address registered to the beneficiary’s PayPal account so we can send the approved assistance. Your contact email may be different.'

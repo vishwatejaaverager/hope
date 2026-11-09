@@ -95,6 +95,7 @@ def _build_case_response(c: Case) -> CaseResponse:
         currency=c.currency,
         urgency=c.urgency,
         status=c.status,
+        approval_source=c.approval_source,
         overall_summary=c.overall_summary,
         next_action=c.next_action,
         pending_items=c.pending_items,
@@ -205,6 +206,7 @@ def create_case(
         currency=payload.currency.upper() if payload.currency else "USD",
         urgency=payload.urgency.lower() if payload.urgency else "medium",
         status=payload.status.lower() if payload.status else "new",
+        approval_source="reviewer" if payload.status.lower() == "approved" else None,
         overall_summary=payload.overall_summary,
         next_action=payload.next_action,
         pending_items=payload.pending_items,
@@ -352,6 +354,9 @@ def update_case(
     case_row = _find_case_by_identifier(db, case_identifier)
     if not case_row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found.")
+
+    if payload.status is not None:
+        case_row.approval_source = 'reviewer' if payload.status.lower() == 'approved' else None
 
     update_dict = payload.model_dump(exclude_unset=True)
     for field, val in update_dict.items():

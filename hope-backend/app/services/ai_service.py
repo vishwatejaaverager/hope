@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 
@@ -96,7 +97,7 @@ def _heuristic_fallback_analysis(
         urgency = "high"
 
     # Extract dollar amounts if mentioned (e.g. total estimate vs requested amount)
-    all_amounts = re.findall(r"\$\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{2})?|[0-9]+(?:\.[0-9]{2})?)", text)
+    all_amounts = re.findall(r"(?:\$|\bUSD\s*)\s*([0-9]+(?:,[0-9]{3})*(?:\.[0-9]{1,2})?)", text)
     parsed_amounts: list[float] = []
     for raw_amt in all_amounts:
         try:
@@ -126,7 +127,9 @@ def _heuristic_fallback_analysis(
 
     # Determine verification completeness (accounting for future-tense promises like "will send ... as soon as")
     doc_text = " ".join(str(a.get("extracted_text") or "") for a in att_list).lower()
-    combined_names = " ".join(att_names).lower() + " " + lower + " " + prev_summary.lower() + " " + doc_text
+    # Questions about missing documents and living summaries are not submitted
+    # evidence. Only use actual attachment names/content for this receipt hint.
+    combined_names = " ".join(att_names).lower().replace('_', ' ').replace('-', ' ') + " " + doc_text
     deferred_estimate = bool(re.search(r"will\s+send[^.]*?(?:estimate|bill|invoice)", lower))
     deferred_id = bool(re.search(r"will\s+send[^.]*?(?:id|passport|aadhaar|license)", lower))
 
@@ -135,7 +138,7 @@ def _heuristic_fallback_analysis(
         and not deferred_estimate
     )
     has_id = (
-        any(k in combined_names for k in ("id", "passport", "aadhaar", "license", "government"))
+        bool(re.search(r"\b(?:id|identification|passport|aadhaar|license|government)\b", combined_names))
         and not deferred_id
     )
     has_medical = any(k in combined_names for k in ("prescription", "admission", "report", "doctor", "note", "clearance"))
@@ -271,17 +274,20 @@ def analyze_incoming_email(
         "- verification_score: integer 0 to 100 indicating how complete and authentic the medical/ID documentation is\n"
         "- is_100_percent_verified: boolean (true ONLY when official hospital cost estimate/bill AND patient ID/medical proof have been submitted and verified with no pending items left. Never treat filenames or a sender’s claim of attachment as verification; if actual readable evidence is unavailable, keep the case under_review)\n"
         "- document_verification_notes: detailed findings from inspecting the attachments/documents\n"
-        "- status: one of ['new', 'awaiting_documents', 'under_review', 'approved', 'rejected'] (set to 'approved' if is_100_percent_verified is true)\n"
+        "- document_checks: list of objects, one per supplied attachment. Each object MUST include document_type ('medical_record', 'cost_estimate', or 'government_id'), attachment_index (zero-based index in Attachments Metadata), verdict ('verified', 'unreadable', 'mismatch', or 'invalid'), patient_name, issuer, document_date (YYYY-MM-DD), and evidence_text (an exact excerpt READ from that attachment, never the email). Medical records also require diagnosis and clinician. Cost estimates require numeric amount and ISO currency. Government ID requires id_type and id_last_four (only last four characters; never reproduce the full ID). Only verified means the attachment is readable, internally consistent, and supports its claimed type. Do not label a medical prescription as a bill or identity document. One attachment can support only one document type; request separate files for combined bundles. Never invent an excerpt or document details. If an attachment is not available/readable, mark unreadable. Do not repeat old evidence as a current attachment; existing_case_context.verification_evidence contains previously checked documents.\n"
+        "- verification_issues: list of strings for mismatched patient details, invalid or stale documents, suspicious alterations, or other unresolved checks; empty only if none found\n"
+        "- status: one of ['new', 'awaiting_documents', 'under_review', 'rejected']. The backend computes approval from document evidence; never decide approval from confidence alone\n"
         "- overall_summary: comprehensive living summary of all email exchanges in the case so far (combining existing_case_context and this new email)\n"
         "- next_action: clear next action for the case officer or payout system\n"
         "- extracted_documents: list of strings describing attachments/documents received so far\n"
         "- pending_items: list of strings for documents/verifications still missing (empty list [] if 100% verified)\n"
         "- auto_reply_subject: polite, clear subject line for the automatic reply email back to the sender\n"
-        "- auto_reply_body: natural, empathetic plain-text reply addressing the latest message using case history. Ask only for genuinely missing information. Do not paste internal summaries, scores, field names, or status-report templates. Never say funds were sent; the payment workflow adds factual payment instructions after approval\n"
+        "- auto_reply_body: natural, empathetic plain-text reply addressing the latest message using case history. Ask only for genuinely missing information. Do not paste internal summaries, scores, field names, or status-report templates. Never claim the application is approved or request PayPal details. The backend adds factual payment instructions after document checks pass. Never say funds were sent\n"
         "Respond ONLY with raw JSON and no markdown fences."
     )
 
     text_prompt = (
+        f"Review date: {date.today().isoformat()}\n"
         f"Sender: {sender}\n"
         f"Subject: {subject or '(No subject)'}\n"
         f"Attachments Metadata: {attachments_desc}\n"
@@ -344,12 +350,6 @@ def analyze_incoming_email(
             for k, v in parsed.items():
                 if v is not None:
                     merged[k] = v
-
-            # Ensure consistency when pending_items is empty and documents were provided
-            if merged.get("is_100_percent_verified") is True:
-                merged["status"] = "approved"
-                merged["verification_score"] = 100
-                merged["pending_items"] = []
 
             # Force strict 'Re: <Original Subject>' so Gmail threads the reply into the same conversation
             merged["auto_reply_subject"] = _format_threaded_reply_subject(subject)

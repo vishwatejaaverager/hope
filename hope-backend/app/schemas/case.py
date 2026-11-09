@@ -47,6 +47,9 @@ class CaseUpdate(BaseModel):
 
 
 class CaseResponse(BaseModel):
+    approval_source: Optional[str] = None
+    verification_evidence: Optional[Any] = None
+    verification_issues: Optional[Any] = None
     id: str
     case_number: str
     patient_user_id: Optional[str] = None

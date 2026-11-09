@@ -95,3 +95,23 @@ and individual migration statements to 60 seconds. Migration failures stop start
 instead of serving requests with missing columns. Simultaneous migration runners
 use a PostgreSQL advisory lock. Unknown database revisions fail explicitly; they
 are never silently skipped or stamped.
+
+## Automatic document approval checks
+
+AI confidence flags no longer grant approval. The backend requires independently
+referenced medical, cost-estimate, and government-ID attachments, with grounded
+excerpts, patient/issuer/date details, matching patient names, a positive USD
+estimate, and requested assistance no greater than that estimate. Unreadable
+files, mismatches, or unresolved warnings block automatic approval. Use separate
+files for each document type. PDF files need extracted text; image evidence must
+reference an image actually supplied to the vision model.
+
+Server-owned `verification_evidence` and `verification_issues` persist across
+emails. An email containing only PayPal details cannot clear an unresolved
+verification warning. Approval provenance is recorded as `document_checks` or an
+explicit `reviewer` action. Startup migration returns legacy unpaid approvals
+without evidence to review, without changing existing payout records.
+
+These checks establish completeness and consistency, not proof that an issuer,
+stamp, signature, or identity document is authentic. External issuer/identity
+verification is not implemented.

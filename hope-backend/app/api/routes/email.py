@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.core.security import verify_session_token, verify_webhook_secret
 from app.db import get_db
 from app.models import Case, EmailAttachment, IncomingEmail, OutgoingEmail
-from app.services import ai_service, imap_service, smtp_service, case_workflow
+from app.services import ai_service, imap_service, smtp_service, case_workflow, approval_policy
 from app.schemas.email import (
     IncomingEmailListItem,
     IncomingEmailPayload,
@@ -311,6 +311,8 @@ async def receive_incoming_email(
             "patient_name": matched_case.patient_name,
             "patient_email": matched_case.patient_email,
             "paypal_email": matched_case.paypal_email,
+            "verification_evidence": matched_case.verification_evidence,
+            "verification_issues": matched_case.verification_issues,
             "medical_category": matched_case.medical_category,
             "hospital_name": matched_case.hospital_name,
             "estimated_cost": str(matched_case.estimated_cost) if matched_case.estimated_cost else None,
@@ -332,6 +334,36 @@ async def receive_incoming_email(
             attachment_metadata=serialized_attachments,
             existing_case_context=existing_context,
         )
+
+    if isinstance(ai_result, dict):
+        if matched_case and matched_case.requested_amount is not None:
+            ai_result['requested_amount'] = str(matched_case.requested_amount)
+        ai_result = approval_policy.constrain_email_analysis(
+            ai_result, payload.sender, payload.subject, payload.body_plain, serialized_attachments,
+            existing_evidence=matched_case.verification_evidence if matched_case else None,
+            existing_issues=matched_case.verification_issues if matched_case else None,
+        )
+
+    if matched_case and matched_case.status in {'rejected', 'closed'} and isinstance(ai_result, dict):
+        ai_result['status'] = matched_case.status
+        ai_result['is_100_percent_verified'] = False
+        ai_result['approval_source'] = None
+        ai_result['auto_reply_body'] = (
+            f'Your case remains {matched_case.status}. Please contact the Hope team if you would like to request a further review.'
+        )
+
+    # Existing approvals have no trustworthy provenance after the old AI flag
+    # path. Preserve completed/in-flight payouts, but require review before a
+    # legacy approved case can create a new payout.
+    if (matched_case and matched_case.status == 'approved'
+            and matched_case.approval_source not in approval_policy.TRUSTED_APPROVALS
+            and isinstance(ai_result, dict) and not ai_result.get('is_100_percent_verified')):
+        matched_case.status = 'under_review'
+        matched_case.approval_source = None
+        if isinstance(ai_result, dict):
+            ai_result['status'] = 'under_review'
+            ai_result['auto_reply_body'] = approval_policy.REVIEW_MESSAGE
+            ai_result['next_action'] = 'Review previous unsupported approval before authorizing payment'
 
     # 8. Create or update the linked Case record with AI living summary
     if isinstance(ai_result, dict):
@@ -359,6 +391,9 @@ async def receive_incoming_email(
                 currency="USD",
                 urgency=str(ai_result.get("urgency") or "medium").lower(),
                 status=str(ai_result.get("status") or "new").lower(),
+                approval_source=ai_result.get("approval_source"),
+                verification_evidence=ai_result.get("verification_evidence"),
+                verification_issues=ai_result.get("verification_issues"),
                 overall_summary=ai_result.get("overall_summary") or ai_result.get("summary"),
                 next_action=ai_result.get("next_action"),
                 pending_items=ai_result.get("pending_items"),
@@ -380,10 +415,12 @@ async def receive_incoming_email(
                 matched_case.estimated_cost = est_cost
             if not matched_case.requested_amount and req_amt is not None:
                 matched_case.requested_amount = req_amt
-            if ai_result.get("is_100_percent_verified") is True and matched_case.status not in ("payout_processing", "disbursed", "paid"):
-                matched_case.status = "approved"
-            elif ai_result.get("status") and matched_case.status not in ("approved", "payout_processing", "disbursed", "paid"):
-                matched_case.status = str(ai_result["status"]).lower()
+            matched_case.verification_evidence = ai_result.get('verification_evidence')
+            matched_case.verification_issues = ai_result.get('verification_issues')
+            if matched_case.status not in ('payout_processing', 'disbursed', 'paid') and matched_case.approval_source != approval_policy.REVIEWER:
+                matched_case.status = str(ai_result['status'])
+                matched_case.approval_source = ai_result.get('approval_source')
+
 
     if matched_case and not matched_case.paypal_email:
         # Only payment details supplied by this case's contact can set the beneficiary.

@@ -16,7 +16,7 @@ def isolate(monkeypatch):
 
 def make_case(db, **kw):
     row = Case(case_number='CASE-PAYMENT-01', patient_name='Sara', patient_email='sara@example.com',
-               requested_amount=Decimal('125.00'), currency='USD', status='approved', **kw)
+               requested_amount=Decimal('125.00'), currency='USD', status='approved', approval_source='reviewer', **kw)
     db.add(row); db.commit()
     return row
 
@@ -151,3 +151,170 @@ def test_zapier_five_field_application_payload(client, db_session):
     assert response.json()['auto_reply_recipient'] == payload['sender']
     assert response.json()['auto_reply_body']
     assert db_session.execute(select(OutgoingEmail)).scalar_one().status == 'pending'
+
+
+def test_single_prescription_cannot_be_auto_approved(client, db_session, monkeypatch):
+    monkeypatch.setattr(ai_service, 'analyze_incoming_email', Mock(return_value={
+        'patient_name': 'Ramesh Kumar', 'patient_email': 'applicant@example.com',
+        'requested_amount': 125, 'status': 'approved',
+        'is_100_percent_verified': True, 'pending_items': [],
+        'auto_reply_body': 'Your case is approved. Please send your PayPal email.',
+    }))
+    response = client.post('/api/v1/emails/incoming', headers={'X-Webhook-Secret': TEST_SECRET}, json={
+        'message_id': 'single-prescription', 'sender': 'applicant@example.com',
+        'recipient': 'support@hope.org', 'subject': 'Medical assistance request',
+        'body_plain': 'I have only the consultation and prescription document. Do I need a cost estimate and identification?',
+        'attachment_metadata': [{'filename': '1.png', 'content_type': 'image/png', 'url': 'https://example.com/1.png'}],
+    })
+    assert response.status_code == 201
+    case = db_session.execute(select(Case)).scalar_one()
+    assert case.status != 'approved'
+    reply = response.json()['auto_reply_body'].lower()
+    assert 'case is approved' not in reply
+    assert 'estimate' in reply
+    assert 'identification' in reply or 'government id' in reply
+    assert not db_session.execute(select(Payout)).scalars().all()
+
+
+def test_old_unattributed_approval_cannot_trigger_payment(client, db_session):
+    case = make_case(db_session, paypal_email='payee@example.com')
+    case.approval_source = None
+    db_session.commit()
+    response = incoming(client, case, 'My PayPal email is payee@example.com', 'legacy-approval')
+    assert response.status_code == 201
+    assert case.status == 'under_review'
+    assert 'case is approved' not in response.json()['auto_reply_body'].lower()
+    assert not db_session.execute(select(Payout)).scalars().all()
+
+
+def document_fixture():
+    definitions = [
+        ('medical_record', 'Medical consultation for Ramesh Kumar: coronary artery disease.', {'diagnosis': 'Coronary artery disease', 'clinician': 'Dr Rao'}),
+        ('cost_estimate', 'Hospital estimate for Ramesh Kumar: treatment costs USD 500.', {'amount': '500.00', 'currency': 'USD'}),
+        ('government_id', 'Government identification issued to Ramesh Kumar, reference ending 1234.', {'id_type': 'national_id', 'id_last_four': '1234'}),
+    ]
+    attachments, checks = [], []
+    for index, (kind, quote, details) in enumerate(definitions):
+        attachments.append({'filename': f'{kind}.txt', 'content_type': 'text/plain', 'extracted_text': quote})
+        checks.append({'document_type': kind, 'attachment_index': index, 'verdict': 'verified',
+                       'patient_name': 'Ramesh Kumar', 'issuer': 'Test issuing authority',
+                       'document_date': '2026-11-01', 'evidence_text': quote, **details})
+    return attachments, checks
+
+
+def test_complete_document_checks_approve_and_pay_automatically(client, db_session, monkeypatch):
+    attachments, checks = document_fixture()
+    monkeypatch.setattr(ai_service, 'analyze_incoming_email', Mock(return_value={
+        'patient_name': 'Ramesh Kumar', 'requested_amount': '125.00',
+        'status': 'under_review', 'document_checks': checks, 'verification_issues': [],
+        'auto_reply_body': 'Thank you for the supporting documents.',
+    }))
+    create = mock_paypal(monkeypatch)
+    response = client.post('/api/v1/emails/incoming', headers={'X-Webhook-Secret': TEST_SECRET}, json={
+        'message_id': 'complete-documents', 'sender': 'ramesh@example.com', 'recipient': 'support@hope.org',
+        'subject': 'Medical assistance', 'body_plain': 'My PayPal email is payee@example.com',
+        'attachment_metadata': attachments,
+    })
+    assert response.status_code == 201
+    case = db_session.execute(select(Case)).scalar_one()
+    assert case.status == 'disbursed'
+    assert case.approval_source == 'document_checks'
+    assert len(case.verification_evidence) == 3
+    assert create.call_args.args[:2] == ('payee@example.com', '125.00')
+
+
+def test_mismatched_identity_blocks_automatic_approval():
+    from app.services.approval_policy import constrain_email_analysis
+    attachments, checks = document_fixture()
+    checks[2]['patient_name'] = 'Different Patient'
+    result = constrain_email_analysis({'patient_name': 'Ramesh Kumar', 'requested_amount': 125,
+                                       'document_checks': checks}, 'test@example.com', None, '', attachments)
+    assert result['status'] == 'under_review'
+    assert 'Patient names do not match across the documents' in result['verification_issues']
+
+
+def test_one_attachment_cannot_claim_all_document_types():
+    from app.services.approval_policy import constrain_email_analysis
+    attachments, checks = document_fixture()
+    for check in checks:
+        check['attachment_index'] = 0
+        check['evidence_text'] = attachments[0]['extracted_text']
+    result = constrain_email_analysis({'patient_name': 'Ramesh Kumar', 'requested_amount': 125,
+                                       'document_checks': checks}, 'test@example.com', None, '', attachments[:1])
+    assert result['status'] == 'under_review'
+    assert 'cost_estimate' in result['pending_items']
+    assert 'government_id' in result['pending_items']
+
+
+def test_document_checks_accumulate_across_emails():
+    from app.services.approval_policy import constrain_email_analysis
+    attachments, checks = document_fixture()
+    first = constrain_email_analysis({'patient_name': 'Ramesh Kumar', 'requested_amount': 125,
+                                      'document_checks': checks[:1]}, 'test@example.com', None, '', attachments[:1])
+    assert first['status'] == 'under_review'
+    for check in checks[1:]:
+        check['attachment_index'] -= 1
+    second = constrain_email_analysis({'patient_name': 'Ramesh Kumar', 'requested_amount': 125,
+                                       'document_checks': checks[1:]}, 'test@example.com', None, '', attachments[1:],
+                                       existing_evidence=first['verification_evidence'])
+    assert second['status'] == 'approved'
+    assert second['pending_items'] == []
+
+
+def test_fabricated_excerpt_or_unresolved_issue_blocks_approval():
+    from app.services.approval_policy import constrain_email_analysis
+    attachments, checks = document_fixture()
+    checks[1]['evidence_text'] = 'This text does not exist in the attachment.'
+    result = constrain_email_analysis({'patient_name': 'Ramesh Kumar', 'requested_amount': 125,
+                                       'document_checks': checks}, 'test@example.com', None, '', attachments)
+    assert result['status'] == 'under_review'
+    attachments, checks = document_fixture()
+    result = constrain_email_analysis({'patient_name': 'Ramesh Kumar', 'requested_amount': 125,
+                                       'document_checks': checks, 'verification_issues': ['Possible alteration']},
+                                      'test@example.com', None, '', attachments)
+    assert result['status'] == 'under_review'
+
+
+def test_usd_amount_is_not_truncated_in_fallback():
+    result = ai_service._heuristic_fallback_analysis('test@example.com', None, 'I request USD 125 for treatment.', [])
+    assert result['requested_amount'] == 125
+
+
+def test_verification_warning_survives_later_payment_email():
+    from app.services.approval_policy import constrain_email_analysis
+    attachments, checks = document_fixture()
+    first = constrain_email_analysis({'patient_name': 'Ramesh Kumar', 'requested_amount': 125,
+                                      'document_checks': checks, 'verification_issues': ['Possible alteration']},
+                                     'test@example.com', None, '', attachments)
+    next_result = constrain_email_analysis({'patient_name': 'Ramesh Kumar', 'requested_amount': 125},
+        'test@example.com', None, 'My PayPal email is payee@example.com', [],
+        existing_evidence=first['verification_evidence'], existing_issues=first['verification_issues'])
+    assert next_result['status'] == 'under_review'
+    assert 'Possible alteration' in next_result['verification_issues']
+
+
+def test_pdf_url_without_readable_text_cannot_establish_verification():
+    from app.services.approval_policy import constrain_email_analysis
+    attachments, checks = document_fixture()
+    for attachment in attachments:
+        attachment.pop('extracted_text')
+        attachment['content_type'] = 'application/pdf'
+        attachment['url'] = 'https://example.com/document.pdf'
+    result = constrain_email_analysis({'patient_name': 'Ramesh Kumar', 'requested_amount': 125,
+                                       'document_checks': checks}, 'test@example.com', None, '', attachments)
+    assert result['status'] == 'under_review'
+    assert result['verification_evidence'] == []
+
+
+def test_readable_prescription_only_requests_estimate_and_id():
+    from app.services.approval_policy import constrain_email_analysis
+    attachments, checks = document_fixture()
+    attachments = [{'filename': '1.png', 'content_type': 'image/png', 'url': 'https://example.com/prescription.png'}]
+    result = constrain_email_analysis({'patient_name': 'Ramesh Kumar', 'requested_amount': 125,
+                                       'document_checks': checks[:1], 'status': 'approved',
+                                       'auto_reply_body': 'Your case is approved.'},
+                                      'test@example.com', None, '', attachments)
+    assert result['status'] == 'under_review'
+    assert set(result['pending_items']) == {'cost_estimate', 'government_id'}
+    assert 'estimate' in result['auto_reply_body']
+    assert 'identification' in result['auto_reply_body']
