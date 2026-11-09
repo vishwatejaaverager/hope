@@ -264,8 +264,14 @@ async def receive_incoming_email(
         fname_val = (
             raw_dict.get("filename")
             or raw_dict.get("name")
-            or (str(url_val).split("/")[-1] if url_val else f"document_{idx + 1}")
+            or (
+                f"Attached Document #{idx + 1}"
+                if str(url_val).strip() == "<A File Object>"
+                else (str(url_val).split("/")[-1] if url_val else f"document_{idx + 1}")
+            )
         )
+        if str(fname_val).strip() == "<A File Object>":
+            fname_val = f"Attached Document #{idx + 1}"
         clean_doc: dict[str, Any] = {
             "filename": str(fname_val),
             "url": str(url_val) if url_val else None,
@@ -399,18 +405,21 @@ async def receive_incoming_email(
     if payload.ai_summary is None and isinstance(ai_result, dict) and ai_result.get("auto_reply_body"):
         reply_to_addr = ai_service._extract_email_address(payload.sender)
         if reply_to_addr and "@" in reply_to_addr:
-            reply_subj = str(
-                ai_result.get("auto_reply_subject")
-                or f"Re: {payload.subject or 'Hope Medical Assistance'} [{resolved_app_id or 'HOPE'}]"
-            )[:500]
-            if resolved_app_id and resolved_app_id not in reply_subj:
-                reply_subj = f"{reply_subj} [{resolved_app_id}]"[:500]
+            # Keep subject strictly as 'Re: <Original Subject>' so Gmail threads it into the same conversation
+            reply_subj = ai_service._format_threaded_reply_subject(payload.subject)[:500]
+            reply_body_str = str(ai_result["auto_reply_body"])
+            if resolved_app_id and resolved_app_id not in reply_body_str:
+                reply_body_str = reply_body_str.replace(
+                    "--- CASE VERIFICATION STATUS ---\n",
+                    f"--- CASE VERIFICATION STATUS ---\n• Case ID: {resolved_app_id}\n",
+                    1,
+                )
             auto_reply_record = OutgoingEmail(
                 case_id=matched_case.id if matched_case else None,
                 application_id=resolved_app_id or "GENERAL",
                 recipient_email=reply_to_addr,
                 subject=reply_subj,
-                body_plain=str(ai_result["auto_reply_body"]),
+                body_plain=reply_body_str,
                 reply_to_message_id=payload.message_id,
                 status="pending",
                 raw_payload={"auto_generated_by_ai": True, "model": ai_result.get("model_used")},
@@ -496,6 +505,8 @@ async def receive_incoming_email(
                     "subject": auto_reply_record.subject,
                     "body": auto_reply_record.body_plain,
                     "reply_to_message_id": auto_reply_record.reply_to_message_id,
+                    "in_reply_to": auto_reply_record.reply_to_message_id,
+                    "references": auto_reply_record.reply_to_message_id,
                 },
                 timeout=5,
             )

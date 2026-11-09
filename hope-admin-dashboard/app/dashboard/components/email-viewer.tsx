@@ -277,37 +277,50 @@ export function EmailCommunicationsPanel({ emails }: { emails: EmailRow[] }) {
                     </div>
                     {selected.attachments.length > 0 ? (
                       <ul className="mt-2 space-y-2">
-                        {selected.attachments.map((att, idx) => (
-                          <li
-                            key={idx}
-                            className="flex items-center justify-between rounded-md border border-slate-200 bg-white px-3 py-2 text-xs"
-                          >
-                            <div className="flex items-center gap-2 truncate">
-                              <span>📎</span>
-                              <span className="font-semibold text-slate-800">
-                                {att.filename || `Attachment ${idx + 1}`}
-                              </span>
-                              {att.content_type && (
-                                <span className="text-slate-400">({att.content_type})</span>
-                              )}
-                              {typeof att.size === 'number' && (
-                                <span className="text-slate-400">
-                                  {(att.size / 1024).toFixed(1)} KB
+                        {selected.attachments.map((att, idx) => {
+                          const isHttpUrl =
+                            typeof att.url === 'string' &&
+                            (att.url.startsWith('http://') || att.url.startsWith('https://'));
+                          const displayFilename =
+                            att.filename && att.filename !== '<A File Object>'
+                              ? att.filename
+                              : `Attached Document #${idx + 1}`;
+                          return (
+                            <li
+                              key={idx}
+                              className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-xs"
+                            >
+                              <div className="flex items-center gap-2 truncate">
+                                <span>📎</span>
+                                <span className="font-semibold text-slate-800">
+                                  {displayFilename}
+                                </span>
+                                {att.content_type && (
+                                  <span className="text-slate-400">({att.content_type})</span>
+                                )}
+                                {typeof att.size === 'number' && (
+                                  <span className="text-slate-400">
+                                    {(att.size / 1024).toFixed(1)} KB
+                                  </span>
+                                )}
+                              </div>
+                              {isHttpUrl ? (
+                                <a
+                                  href={att.url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="font-semibold text-pp-blue hover:underline"
+                                >
+                                  Open / Download ↗
+                                </a>
+                              ) : (
+                                <span className="rounded bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-800 border border-amber-200">
+                                  Zapier File Object (Map Attachment URL in Inbound Zap)
                                 </span>
                               )}
-                            </div>
-                            {att.url && (
-                              <a
-                                href={att.url}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="font-semibold text-pp-blue hover:underline"
-                              >
-                                Open / Download
-                              </a>
-                            )}
-                          </li>
-                        ))}
+                            </li>
+                          );
+                        })}
                       </ul>
                     ) : (
                       <p className="mt-1 text-xs text-slate-500">

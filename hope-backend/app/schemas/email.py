@@ -152,14 +152,26 @@ class IncomingEmailPayload(BaseModel):
 
         # 5. Normalize body_plain
         if not data.get("body_plain"):
-            for alt in ("body", "text", "body_text", "plain_text", "content"):
+            for alt in (
+                "body",
+                "text",
+                "body_text",
+                "plain_text",
+                "content",
+                "raw_body",
+                "stripped_text",
+                "message",
+                "snippet",
+                "Body Plain",
+                "Body",
+            ):
                 if data.get(alt):
                     data["body_plain"] = str(data[alt])
                     break
 
         # 6. Normalize body_html
         if not data.get("body_html"):
-            for alt in ("html", "body_html_content", "HTML"):
+            for alt in ("html", "body_html_content", "HTML", "Body HTML"):
                 if data.get(alt):
                     data["body_html"] = str(data[alt])
                     break
@@ -201,17 +213,31 @@ class IncomingEmailPayload(BaseModel):
                     or data.get("file")
                     or data.get("attachment")
                 )
+                flat_name = (
+                    data.get("attachment_filename")
+                    or data.get("attachment_name")
+                    or data.get("file_name")
+                    or data.get("filename")
+                )
                 if isinstance(flat_url, str) and flat_url.strip():
-                    flat_name = (
-                        data.get("attachment_filename")
-                        or data.get("filename")
-                        or flat_url.strip().split("/")[-1]
-                        or "attachment"
-                    )
+                    clean_url = flat_url.strip()
+                    if not flat_name:
+                        if clean_url == "<A File Object>":
+                            flat_name = "Attached Document (Email Attachment)"
+                        else:
+                            flat_name = clean_url.split("/")[-1] or "attachment"
                     data["attachment_metadata"] = [
                         {
                             "filename": str(flat_name),
-                            "url": flat_url.strip(),
+                            "url": clean_url,
+                            "content_type": data.get("attachment_content_type") or data.get("content_type"),
+                        }
+                    ]
+                elif isinstance(flat_name, str) and flat_name.strip():
+                    data["attachment_metadata"] = [
+                        {
+                            "filename": flat_name.strip(),
+                            "url": None,
                             "content_type": data.get("attachment_content_type") or data.get("content_type"),
                         }
                     ]

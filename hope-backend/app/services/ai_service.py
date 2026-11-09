@@ -43,6 +43,16 @@ def _extract_name_from_sender(sender: str) -> Optional[str]:
     return user_part.title() if user_part else None
 
 
+def _format_threaded_reply_subject(subject: Optional[str]) -> str:
+    """Format subject strictly as 'Re: <Original Subject>' so Gmail/email clients thread it as a reply."""
+    clean = (subject or "").strip()
+    if not clean:
+        return "Re: Hope Medical Assistance Application"
+    if clean.lower().startswith("re:"):
+        return clean
+    return f"Re: {clean}"
+
+
 def _extract_email_address(sender: str) -> str:
     if not sender:
         return ""
@@ -85,14 +95,22 @@ def _heuristic_fallback_analysis(
     elif any(k in lower for k in ("urgent", "soon", "scheduled surgery", "high", "next tuesday")):
         urgency = "high"
 
-    # Extract dollar amount if mentioned
-    amount_match = re.search(r"\$\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{2})?|[0-9]+(?:\.[0-9]{2})?)", text)
-    extracted_amount: Optional[float] = None
-    if amount_match:
+    # Extract dollar amounts if mentioned (e.g. total estimate vs requested amount)
+    all_amounts = re.findall(r"\$\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{2})?|[0-9]+(?:\.[0-9]{2})?)", text)
+    parsed_amounts: list[float] = []
+    for raw_amt in all_amounts:
         try:
-            extracted_amount = float(amount_match.group(1).replace(",", ""))
+            parsed_amounts.append(float(raw_amt.replace(",", "")))
         except ValueError:
-            extracted_amount = None
+            pass
+    extracted_estimate: Optional[float] = parsed_amounts[0] if parsed_amounts else None
+    extracted_requested: Optional[float] = (
+        parsed_amounts[1] if len(parsed_amounts) >= 2 else extracted_estimate
+    )
+
+    # Extract hospital name if mentioned
+    hosp_match = re.search(r"\b([A-Z][A-Za-z0-9&\s]{2,40}?\s+(?:Hospital|Medical Center|Clinic|Institute|Health))\b", text)
+    extracted_hospital = hosp_match.group(1).strip() if hosp_match else (existing_case_context or {}).get("hospital_name")
 
     email_summary = (
         f"Received email '{subject or '(No subject)'}' from {sender}"
@@ -106,27 +124,38 @@ def _heuristic_fallback_analysis(
         snippet = (body_plain or subject or "Medical assistance inquiry").strip()[:220]
         updated_case_summary = f"Patient inquiry ({category}): {snippet}"
 
-    # Determine verification completeness
-    combined_names = " ".join(att_names).lower() + " " + lower
-    has_estimate = any(k in combined_names for k in ("estimate", "bill", "invoice", "quote", "stamped"))
-    has_id = any(k in combined_names for k in ("id", "passport", "aadhaar", "license", "government"))
-    has_medical = any(k in combined_names for k in ("prescription", "admission", "report", "doctor", "note"))
+    # Determine verification completeness (accounting for future-tense promises like "will send ... as soon as")
+    combined_names = " ".join(att_names).lower() + " " + lower + " " + prev_summary.lower()
+    deferred_estimate = bool(re.search(r"will\s+send[^.]*?(?:estimate|bill|invoice)", lower))
+    deferred_id = bool(re.search(r"will\s+send[^.]*?(?:id|passport|aadhaar|license)", lower))
+
+    has_estimate = (
+        any(k in combined_names for k in ("estimate", "bill", "invoice", "quote", "stamped"))
+        and not deferred_estimate
+    )
+    has_id = (
+        any(k in combined_names for k in ("id", "passport", "aadhaar", "license", "government"))
+        and not deferred_id
+    )
+    has_medical = any(k in combined_names for k in ("prescription", "admission", "report", "doctor", "note", "clearance"))
+    mentions_attaching = any(k in lower for k in ("attaching", "attached", "enclosed", "submitting"))
 
     pending_items: list[str] = []
     if not has_estimate:
         pending_items.append("hospital_treatment_estimate")
     if not has_id:
         pending_items.append("patient_government_id")
-    if not has_medical and att_count == 0:
+    if not has_medical and att_count == 0 and not mentions_attaching:
         pending_items.append("medical_prescription_or_admission_note")
 
-    is_verified = len(pending_items) == 0 and att_count > 0
-    verification_score = 100 if is_verified else (70 if att_count >= 2 else (40 if att_count == 1 else 15))
+    has_any_docs = att_count > 0 or mentions_attaching
+    is_verified = len(pending_items) == 0 and has_any_docs
+    verification_score = 100 if is_verified else (70 if att_count >= 2 else (45 if has_any_docs else 15))
 
     if is_verified:
         status = "approved"
         next_action = "100% Verified — Ready to disburse payout to beneficiary"
-    elif att_count > 0:
+    elif has_any_docs:
         status = "under_review"
         next_action = f"Request remaining documents: {', '.join(pending_items)}"
     else:
@@ -134,8 +163,8 @@ def _heuristic_fallback_analysis(
         next_action = "Send auto-reply requesting hospital estimate, medical report, and government ID"
 
     patient_name = (existing_case_context or {}).get("patient_name") or _extract_name_from_sender(sender) or "Applicant"
+    auto_reply_subject = _format_threaded_reply_subject(subject)
     if is_verified:
-        auto_reply_subject = f"Application Approved & Verified - {subject or 'Hope Medical Assistance'}"
         auto_reply_body = (
             f"Dear {patient_name},\n\n"
             "Thank you for submitting your medical and identification documents.\n\n"
@@ -149,7 +178,6 @@ def _heuristic_fallback_analysis(
         )
     else:
         missing_str = ", ".join(item.replace("_", " ") for item in pending_items)
-        auto_reply_subject = f"Action Required: Additional Documents Needed - {subject or 'Hope Assistance'}"
         auto_reply_body = (
             f"Dear {patient_name},\n\n"
             "Thank you for reaching out to Hope Medical Foundation. We have received your message and updated your case file.\n\n"
@@ -168,9 +196,9 @@ def _heuristic_fallback_analysis(
         "patient_email": (existing_case_context or {}).get("patient_email") or _extract_email_address(sender),
         "medical_category": (existing_case_context or {}).get("medical_category") or category,
         "treatment_description": (body_plain or subject or "")[:500] or None,
-        "hospital_name": (existing_case_context or {}).get("hospital_name"),
-        "estimated_cost": extracted_amount,
-        "requested_amount": extracted_amount,
+        "hospital_name": extracted_hospital,
+        "estimated_cost": extracted_estimate,
+        "requested_amount": extracted_requested,
         "urgency": urgency,
         "status": status,
         "verification_score": verification_score,
@@ -243,7 +271,7 @@ def analyze_incoming_email(
         "- requested_amount: numeric financial aid requested in USD if mentioned, else null\n"
         "- urgency: one of ['low', 'medium', 'high', 'critical']\n"
         "- verification_score: integer 0 to 100 indicating how complete and authentic the medical/ID documentation is\n"
-        "- is_100_percent_verified: boolean (true ONLY when official hospital cost estimate/bill AND patient ID/medical proof have been submitted and verified with no pending items left)\n"
+        "- is_100_percent_verified: boolean (true ONLY when official hospital cost estimate/bill AND patient ID/medical proof have been submitted and verified with no pending items left. Note: IMAP email triggers may strip attachment URLs from metadata even when files are attached; if the sender states in the email body that they are attaching/submitting the required documents now—and not merely promising to send them later—count those documents as submitted)\n"
         "- document_verification_notes: detailed findings from inspecting the attachments/documents\n"
         "- status: one of ['new', 'awaiting_documents', 'under_review', 'approved', 'rejected'] (set to 'approved' if is_100_percent_verified is true)\n"
         "- overall_summary: comprehensive living summary of all email exchanges in the case so far (combining existing_case_context and this new email)\n"
@@ -342,6 +370,8 @@ def analyze_incoming_email(
             if "CASE VERIFICATION STATUS" not in base_reply:
                 merged["auto_reply_body"] = f"{base_reply}{status_block}" if base_reply else status_block.strip()
 
+            # Force strict 'Re: <Original Subject>' so Gmail threads the reply into the same conversation
+            merged["auto_reply_subject"] = _format_threaded_reply_subject(subject)
             merged["model_used"] = model_name
             return merged
         except Exception as exc:
