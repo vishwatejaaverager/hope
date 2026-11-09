@@ -43,15 +43,10 @@ app.include_router(case.router)
 
 @app.on_event("startup")
 def _start_background_services() -> None:
-    # Ensure the attachments table exists, then start the IMAP poller (only if IMAP_* env vars are set)
-    from app.db import engine
-    from app.models import EmailAttachment
+    # Alembic owns schema creation. Database I/O here would delay port binding
+    # indefinitely when the database is unreachable.
     from app.services import imap_service
 
-    try:
-        EmailAttachment.__table__.create(bind=engine, checkfirst=True)
-    except Exception:
-        pass
     imap_service.start_poller()
 
 

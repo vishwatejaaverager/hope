@@ -31,7 +31,12 @@ def get_database_url() -> str:
     return url
 
 
-engine = create_engine(get_database_url(), pool_pre_ping=True)
+database_url = get_database_url()
+engine = create_engine(
+    database_url,
+    pool_pre_ping=True,
+    connect_args={"connect_timeout": 10} if database_url.startswith("postgresql") else {},
+)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 
