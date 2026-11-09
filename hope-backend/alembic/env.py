@@ -12,7 +12,7 @@ config = context.config
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # add your model's MetaData object here
 # for 'autogenerate' support
@@ -53,42 +53,46 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
+def _migrate_connection(connection) -> None:
+    from alembic.runtime.migration import MigrationContext
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(config)
+    known = {rev.revision for rev in script.walk_revisions()}
+    current = set(MigrationContext.configure(connection).get_current_heads())
+    unknown = current - known
+    if unknown:
+        raise RuntimeError(
+            f"Database revision(s) {sorted(unknown)} are not present in this checkout. "
+            "Deploy code containing those migrations before starting the service."
+        )
+
+    context.configure(connection=connection, target_metadata=target_metadata)
+    with context.begin_transaction():
+        context.run_migrations()
+
+
 def run_migrations_online() -> None:
-    """Run migrations in 'online' mode.
+    # The runtime supplies its own connection so migrations use exactly the same
+    # database as requests. Its caller owns the transaction and timeouts.
+    connection = config.attributes.get("connection")
+    if connection is not None:
+        _migrate_connection(connection)
+        return
 
-    In this scenario we need to create an Engine
-    and associate a connection with the context.
-
-    """
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args={"connect_timeout": 10},
     )
-
-    with connectable.connect() as connection:
-        # If the database is ahead of this checkout (e.g. a build of an older commit after a newer one
-        # already migrated), skip migrating instead of failing the whole deploy.
-        from alembic.runtime.migration import MigrationContext
-        from alembic.script import ScriptDirectory
-
-        script = ScriptDirectory.from_config(config)
-        known = {rev.revision for rev in script.walk_revisions()}
-        current = set(MigrationContext.configure(connection).get_current_heads())
-        unknown = current - known
-        if unknown:
-            print(
-                f"WARNING: database is at revision(s) {sorted(unknown)} not present in this code; "
-                "skipping migrations."
-            )
-            return
-
-        context.configure(
-            connection=connection, target_metadata=target_metadata
-        )
-
-        with context.begin_transaction():
-            context.run_migrations()
+    # The revision lookup itself starts a SQLAlchemy transaction. Own it before
+    # that lookup so both the DDL and alembic_version are committed together.
+    with connectable.begin() as connection:
+        connection.exec_driver_sql("SET LOCAL lock_timeout = '5s'")
+        connection.exec_driver_sql("SET LOCAL statement_timeout = '60s'")
+        connection.exec_driver_sql("SELECT pg_advisory_xact_lock(719204631)")
+        _migrate_connection(connection)
 
 
 if context.is_offline_mode():

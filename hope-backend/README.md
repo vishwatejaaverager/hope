@@ -62,7 +62,10 @@ pytest -v tests/
 
 ## Approved-case email and payout workflow
 
-Run `alembic upgrade head` before starting the updated backend. The migration adds
+On Render, the backend automatically runs `alembic upgrade head` against its own
+database connection before accepting requests. No Shell access or start-command
+change is needed. Locally, run `alembic upgrade head` before starting the backend,
+or set `AUTO_MIGRATE=1`. The migration adds
 `cases.paypal_email` and a unique case link on payouts; contact email remains separate.
 
 - Approval (email triage or the case API) asks the contact for the beneficiary's
@@ -85,3 +88,10 @@ Run `alembic upgrade head` before starting the updated backend. The migration ad
 
 Existing paid cases without a case-linked payout require manual reconciliation;
 this migration intentionally does not infer historical payment links.
+
+Startup logs `Database migrations committed successfully` after the transaction
+commits. Connection attempts are bounded to 10 seconds, lock waits to 5 seconds,
+and individual migration statements to 60 seconds. Migration failures stop startup
+instead of serving requests with missing columns. Simultaneous migration runners
+use a PostgreSQL advisory lock. Unknown database revisions fail explicitly; they
+are never silently skipped or stamped.

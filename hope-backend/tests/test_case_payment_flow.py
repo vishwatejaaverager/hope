@@ -133,3 +133,21 @@ def test_ai_reply_does_not_receive_status_template(monkeypatch):
     result = ai_service.analyze_incoming_email('sara@example.com', 'Updated bill', 'Here is the bill.')
     assert result['auto_reply_body'].startswith('Hi Sara, thank you')
     assert 'CASE VERIFICATION STATUS' not in result['auto_reply_body']
+
+
+def test_zapier_five_field_application_payload(client, db_session):
+    payload = {
+        'message_id': '<ramesh-application-test@example.com>',
+        'sender': 'ramesh-test@example.com',
+        'recipient': 'support@hope.org',
+        'subject': 'Medical Assistance Request — Ramesh Kumar — Heart Bypass Surgery',
+        'body_plain': 'Dear Hope Medical Assistance Team, I am requesting financial assistance of USD 125 toward treatment at Apollo Hospitals, Hyderabad. I currently have only the consultation and prescription document. Please advise which additional documents are required.',
+    }
+    response = client.post('/api/v1/emails/incoming', json=payload,
+                           headers={'X-Webhook-Secret': TEST_SECRET})
+    assert response.status_code == 201
+    assert response.json()['status'] == 'received'
+    assert response.json()['outgoing_email_id']
+    assert response.json()['auto_reply_recipient'] == payload['sender']
+    assert response.json()['auto_reply_body']
+    assert db_session.execute(select(OutgoingEmail)).scalar_one().status == 'pending'

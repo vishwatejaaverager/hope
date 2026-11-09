@@ -43,8 +43,14 @@ app.include_router(case.router)
 
 @app.on_event("startup")
 def _start_background_services() -> None:
-    # Alembic owns schema creation. Database I/O here would delay port binding
-    # indefinitely when the database is unreachable.
+    # Render starts this app directly with Uvicorn. Migrate its actual runtime
+    # database before accepting requests, with bounded connection/query timeouts.
+    if os.getenv("RENDER") or os.getenv("AUTO_MIGRATE") == "1":
+        from app.db import engine
+        from app.migrations import upgrade_database
+
+        upgrade_database(engine)
+
     from app.services import imap_service
 
     imap_service.start_poller()
