@@ -67,6 +67,22 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
+        # If the database is ahead of this checkout (e.g. a build of an older commit after a newer one
+        # already migrated), skip migrating instead of failing the whole deploy.
+        from alembic.runtime.migration import MigrationContext
+        from alembic.script import ScriptDirectory
+
+        script = ScriptDirectory.from_config(config)
+        known = {rev.revision for rev in script.walk_revisions()}
+        current = set(MigrationContext.configure(connection).get_current_heads())
+        unknown = current - known
+        if unknown:
+            print(
+                f"WARNING: database is at revision(s) {sorted(unknown)} not present in this code; "
+                "skipping migrations."
+            )
+            return
+
         context.configure(
             connection=connection, target_metadata=target_metadata
         )
