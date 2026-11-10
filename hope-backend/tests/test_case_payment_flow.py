@@ -415,3 +415,50 @@ def test_paid_model_chain_and_token_budget(monkeypatch, override, expected):
         assert body['response_format'] == {'type': 'json_object'}
         if body['model'].startswith('google/'):
             assert body['reasoning'] == {'effort': 'minimal'}
+
+
+def test_provider_can_fetch_attachment_while_analysis_is_waiting(client, db_session, monkeypatch):
+    import asyncio
+    import uuid
+    try:
+        from httpx import ASGITransport, AsyncClient
+    except ModuleNotFoundError:
+        from httpx2 import ASGITransport, AsyncClient
+    from app.main import app
+    from app.db import get_db
+    from app.models import EmailAttachment
+    from tests.test_case_management import TestingSessionLocal
+
+    attachment = EmailAttachment(id=uuid.uuid4(), filename='test.png', content_type='image/png',
+                                 size=13, data=b'image-fixture')
+    db_session.add(attachment)
+    db_session.commit()
+    attachment_path = f'/api/v1/emails/attachments/{attachment.id}'
+
+    def request_db():
+        with TestingSessionLocal() as session:
+            yield session
+    app.dependency_overrides[get_db] = request_db
+
+    async def run_request():
+        loop = asyncio.get_running_loop()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url='http://testserver') as http:
+            def provider_analysis(**kwargs):
+                # Emulate OpenRouter fetching an image from this same Uvicorn
+                # worker before it can return its analysis response.
+                future = asyncio.run_coroutine_threadsafe(http.get(attachment_path), loop)
+                response = future.result(timeout=2)
+                assert response.status_code == 200
+                assert response.content == b'image-fixture'
+                return {'patient_name': 'Applicant', 'status': 'under_review',
+                        'auto_reply_body': 'Thank you for the document. We need the remaining supporting evidence.'}
+            monkeypatch.setattr(ai_service, 'analyze_incoming_email', provider_analysis)
+            response = await http.post('/api/v1/emails/incoming', headers={'X-Webhook-Secret': TEST_SECRET}, json={
+                'message_id': 'provider-image-callback', 'sender': 'applicant@example.com',
+                'recipient': 'support@hope.org', 'subject': 'Review document', 'body_plain': 'Document attached.',
+                'attachment_metadata': [{'filename': 'test.png', 'content_type': 'image/png',
+                                         'url': f'http://testserver{attachment_path}'}],
+            })
+            assert response.status_code == 201
+            assert response.json()['outgoing_email_id']
+    asyncio.run(run_request())

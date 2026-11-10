@@ -133,3 +133,9 @@ Old free-model or unsupported overrides are ignored with a warning. Each request
 uses JSON output and a 4,096-token completion cap; Gemini uses minimal reasoning
 effort. The existing OpenRouter API key and account credits are used. If all three
 attempts fail, the applicant receives the existing analysis-failure notice.
+
+The incoming-email handler runs in FastAPI's synchronous worker pool because it
+uses blocking AI, payment, and SMTP clients. This leaves the event loop available
+for vision providers to fetch attachment URLs from the same Uvicorn process while
+analysis is in progress. Attachment downloads also keep blocking database reads
+out of the event loop.

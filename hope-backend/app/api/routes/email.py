@@ -175,7 +175,7 @@ def _authenticate_request(
     status_code=status.HTTP_201_CREATED,
     summary="Receive incoming email webhook from Zapier",
 )
-async def receive_incoming_email(
+def receive_incoming_email(
     payload: IncomingEmailPayload,
     request: Request,
     response: Response,
@@ -193,6 +193,10 @@ async def receive_incoming_email(
     - Associates email with beneficiary application ID when available.
     - Deduplicates using message ID to prevent duplicate processing.
     - Logs safely without exposing sensitive patient/email text.
+
+    This is deliberately a synchronous route: FastAPI runs it in its worker
+    threadpool. Blocking provider/SMTP calls must not occupy the event loop,
+    because vision providers fetch document images from this same server.
     """
     # 1. Validate Webhook Secret
     provided_secret = _extract_provided_secret(
@@ -612,7 +616,7 @@ async def receive_incoming_email(
     "/attachments/{attachment_id}",
     summary="Download an email attachment (unguessable UUID acts as the access token)",
 )
-async def download_attachment(attachment_id: str, db: Session = Depends(get_db)):
+def download_attachment(attachment_id: str, db: Session = Depends(get_db)):
     try:
         att_uuid = uuid.UUID(attachment_id)
     except ValueError:
