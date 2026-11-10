@@ -128,7 +128,7 @@ def test_ai_reply_does_not_receive_status_template(monkeypatch):
     monkeypatch.delenv('DISABLE_OPENROUTER_IN_TESTS')
     monkeypatch.setattr(ai_service, 'get_openrouter_api_key', lambda: 'test-key')
     response = Mock(ok=True)
-    response.json.return_value = {'choices': [{'message': {'content': '{"auto_reply_body":"Hi Sara, thank you for the updated hospital bill. Please send your government ID so we can continue the review."}'}}]}
+    response.json.return_value = {'choices': [{'message': {'content': '{"document_checks":[],"verification_issues":[],"auto_reply_body":"Hi Sara, thank you for the updated hospital bill. Please send your government ID so we can continue the review."}'}}]}
     monkeypatch.setattr(ai_service.requests, 'post', Mock(return_value=response))
     result = ai_service.analyze_incoming_email('sara@example.com', 'Updated bill', 'Here is the bill.')
     assert result['auto_reply_body'].startswith('Hi Sara, thank you')
@@ -318,3 +318,76 @@ def test_readable_prescription_only_requests_estimate_and_id():
     assert set(result['pending_items']) == {'cost_estimate', 'government_id'}
     assert 'estimate' in result['auto_reply_body']
     assert 'identification' in result['auto_reply_body']
+
+
+@pytest.mark.parametrize('failure', ['http_error', 'timeout', 'invalid_json', 'incomplete_json'])
+def test_all_model_failures_return_failure_notice(monkeypatch, failure):
+    monkeypatch.delenv('DISABLE_OPENROUTER_IN_TESTS')
+    monkeypatch.delenv('OPENROUTER_MODEL', raising=False)
+    monkeypatch.setattr(ai_service, 'get_openrouter_api_key', lambda: 'test-key')
+    response = Mock(ok=False, status_code=503, text='Unavailable')
+    if failure in {'invalid_json', 'incomplete_json'}:
+        response.ok = True
+        response.json.return_value = {'choices': [{'message': {'content': 'not JSON' if failure == 'invalid_json' else '{}'}}]}
+    post = Mock(return_value=response)
+    if failure == 'timeout':
+        post.side_effect = ai_service.requests.Timeout('Provider timed out')
+    monkeypatch.setattr(ai_service.requests, 'post', post)
+    result = ai_service.analyze_incoming_email('applicant@example.com', 'Application', 'Please review my documents.')
+    assert post.call_count == len(ai_service.FALLBACK_MODELS)
+    assert result['analysis_status'] == 'failed'
+    assert result['failure_reason'] == 'all_models_failed'
+    assert 'could not complete the document review' in result['auto_reply_body']
+    assert result['is_100_percent_verified'] is False
+
+
+def test_missing_key_returns_failure_notice_without_provider_call(monkeypatch):
+    monkeypatch.delenv('DISABLE_OPENROUTER_IN_TESTS')
+    monkeypatch.setattr(ai_service, 'get_openrouter_api_key', lambda: None)
+    post = Mock()
+    monkeypatch.setattr(ai_service.requests, 'post', post)
+    result = ai_service.analyze_incoming_email('applicant@example.com', 'Application', 'Review please.')
+    post.assert_not_called()
+    assert result['failure_reason'] == 'analysis_not_configured'
+
+
+@pytest.mark.parametrize('already_approved', [False, True])
+def test_failed_analysis_queues_notice_without_payment_or_erasing_evidence(client, db_session, monkeypatch, already_approved):
+    case = make_case(db_session, paypal_email='payee@example.com')
+    case.status = 'approved' if already_approved else 'under_review'
+    case.overall_summary = 'Existing case summary'
+    case.verification_evidence = [{'document_type': 'medical_record', 'patient_name': 'Sara'}]
+    case.verification_issues = ['Identity needs clarification']
+    db_session.commit()
+    monkeypatch.setattr(ai_service, 'analyze_incoming_email', Mock(return_value=ai_service._analysis_failure(
+        case.patient_email, f'Re: {case.case_number}', 'all_models_failed')))
+    response = incoming(client, case, 'My PayPal email is payee@example.com', 'failed-review')
+    assert response.status_code == 201
+    assert 'could not complete the document review' in response.json()['auto_reply_body']
+    assert case.status == ('approved' if already_approved else 'under_review')
+    assert case.overall_summary == 'Existing case summary'
+    assert case.verification_evidence == [{'document_type': 'medical_record', 'patient_name': 'Sara'}]
+    assert case.verification_issues == ['Identity needs clarification']
+    assert 'document_analysis_retry' in case.pending_items
+    outgoing = db_session.execute(select(OutgoingEmail)).scalar_one()
+    assert outgoing.recipient_email == case.patient_email
+    assert outgoing.reply_to_message_id == 'failed-review'
+    assert outgoing.raw_payload['analysis_status'] == 'failed'
+    assert outgoing.raw_payload['auto_generated_by_ai'] is False
+    assert not db_session.execute(select(Payout)).scalars().all()
+
+
+def test_successful_fallback_model_does_not_send_failure_notice(monkeypatch):
+    monkeypatch.delenv('DISABLE_OPENROUTER_IN_TESTS')
+    monkeypatch.delenv('OPENROUTER_MODEL', raising=False)
+    monkeypatch.setattr(ai_service, 'get_openrouter_api_key', lambda: 'test-key')
+    failed = Mock(ok=False, status_code=503, text='Unavailable')
+    success = Mock(ok=True)
+    success.json.return_value = {'choices': [{'message': {'content': '{"document_checks":[],"verification_issues":[],"auto_reply_body":"Thank you for submitting your documents."}'}}]}
+    post = Mock(side_effect=[failed, success])
+    monkeypatch.setattr(ai_service.requests, 'post', post)
+    result = ai_service.analyze_incoming_email('test@example.com', 'Application', 'Review please.')
+    assert post.call_count == 2
+    assert result['analysis_status'] == 'completed'
+    assert 'failure_reason' not in result
+    assert result['auto_reply_body'] == 'Thank you for submitting your documents.'

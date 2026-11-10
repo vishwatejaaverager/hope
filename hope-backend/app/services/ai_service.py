@@ -229,6 +229,29 @@ def _extract_image_urls(attachment_metadata: Optional[list[dict[str, Any]]]) -> 
     return urls
 
 
+def _analysis_failure(sender: str, subject: Optional[str], reason: str) -> dict[str, Any]:
+    return {
+        'analysis_status': 'failed',
+        'failure_reason': reason,
+        'model_used': None,
+        'patient_email': _extract_email_address(sender),
+        'status': 'under_review',
+        'is_100_percent_verified': False,
+        'overall_summary': 'Document analysis could not be completed; another review attempt is required.',
+        'next_action': 'Retry document analysis when the analysis service is available',
+        'pending_items': ['document_analysis_retry'],
+        'auto_reply_subject': _format_threaded_reply_subject(subject),
+        'auto_reply_body': (
+            'Dear Applicant,\n\n'
+            'We have received your email. Unfortunately, we could not complete the document review '
+            'because our analysis service is currently unavailable. No approval or payment decision '
+            'has been made from this attempt.\n\n'
+            'Please try again later by replying to this email with the relevant documents attached.\n\n'
+            'Kind regards,\nHope Medical Assistance Team'
+        ),
+    }
+
+
 def analyze_incoming_email(
     sender: str,
     subject: Optional[str],
@@ -246,8 +269,11 @@ def analyze_incoming_email(
     )
 
     api_key = get_openrouter_api_key()
-    if not api_key or os.getenv("DISABLE_OPENROUTER_IN_TESTS") == "1":
+    if os.getenv("DISABLE_OPENROUTER_IN_TESTS") == "1":
         return fallback
+    if not api_key:
+        logger.error("Document analysis unavailable: OpenRouter API key is not configured")
+        return _analysis_failure(sender, subject, 'analysis_not_configured')
 
     configured_model = os.getenv("OPENROUTER_MODEL", "").strip()
     models_to_try = ([configured_model] if configured_model else []) + [
@@ -343,7 +369,12 @@ def analyze_incoming_email(
                     content = match.group(0)
 
             parsed = json.loads(content)
-            if not isinstance(parsed, dict):
+            if (not isinstance(parsed, dict)
+                    or not isinstance(parsed.get('document_checks'), list)
+                    or not isinstance(parsed.get('verification_issues'), list)
+                    or not isinstance(parsed.get('auto_reply_body'), str)
+                    or not parsed['auto_reply_body'].strip()):
+                logger.warning("OpenRouter model %s returned an incomplete analysis", model_name)
                 continue
 
             merged = dict(fallback)
@@ -354,12 +385,14 @@ def analyze_incoming_email(
             # Force strict 'Re: <Original Subject>' so Gmail threads the reply into the same conversation
             merged["auto_reply_subject"] = _format_threaded_reply_subject(subject)
             merged["model_used"] = model_name
+            merged["analysis_status"] = 'completed'
             return merged
         except Exception as exc:
             logger.warning("OpenRouter model %s failed, trying next fallback: %s", model_name, exc)
             continue
 
-    return fallback
+    logger.error("All configured document-analysis model attempts failed")
+    return _analysis_failure(sender, subject, 'all_models_failed')
 
 
 def to_decimal_or_none(val: Any) -> Optional[Decimal]:

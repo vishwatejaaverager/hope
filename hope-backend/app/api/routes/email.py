@@ -335,7 +335,8 @@ async def receive_incoming_email(
             existing_case_context=existing_context,
         )
 
-    if isinstance(ai_result, dict):
+    analysis_failed = isinstance(ai_result, dict) and ai_result.get('analysis_status') == 'failed'
+    if isinstance(ai_result, dict) and not analysis_failed:
         if matched_case and matched_case.requested_amount is not None:
             ai_result['requested_amount'] = str(matched_case.requested_amount)
         ai_result = approval_policy.constrain_email_analysis(
@@ -344,7 +345,7 @@ async def receive_incoming_email(
             existing_issues=matched_case.verification_issues if matched_case else None,
         )
 
-    if matched_case and matched_case.status in {'rejected', 'closed'} and isinstance(ai_result, dict):
+    if matched_case and matched_case.status in {'rejected', 'closed'} and isinstance(ai_result, dict) and not analysis_failed:
         ai_result['status'] = matched_case.status
         ai_result['is_100_percent_verified'] = False
         ai_result['approval_source'] = None
@@ -357,7 +358,7 @@ async def receive_incoming_email(
     # legacy approved case can create a new payout.
     if (matched_case and matched_case.status == 'approved'
             and matched_case.approval_source not in approval_policy.TRUSTED_APPROVALS
-            and isinstance(ai_result, dict) and not ai_result.get('is_100_percent_verified')):
+            and isinstance(ai_result, dict) and not analysis_failed and not ai_result.get('is_100_percent_verified')):
         matched_case.status = 'under_review'
         matched_case.approval_source = None
         if isinstance(ai_result, dict):
@@ -400,7 +401,7 @@ async def receive_incoming_email(
             )
             db.add(matched_case)
             db.flush()
-        else:
+        elif not analysis_failed:
             if ai_result.get("overall_summary"):
                 matched_case.overall_summary = str(ai_result["overall_summary"])
             if ai_result.get("next_action"):
@@ -422,7 +423,12 @@ async def receive_incoming_email(
                 matched_case.approval_source = ai_result.get('approval_source')
 
 
-    if matched_case and not matched_case.paypal_email:
+    if matched_case and analysis_failed:
+        matched_case.next_action = str(ai_result['next_action'])
+        pending = matched_case.pending_items if isinstance(matched_case.pending_items, list) else []
+        matched_case.pending_items = list(dict.fromkeys([*map(str, pending), 'document_analysis_retry']))
+
+    if matched_case and not matched_case.paypal_email and not analysis_failed:
         # Only payment details supplied by this case's contact can set the beneficiary.
         contact = ai_service._extract_email_address(payload.sender).lower()
         if contact == (matched_case.patient_email or "").lower():
@@ -471,7 +477,9 @@ async def receive_incoming_email(
                 body_plain=reply_body_str,
                 reply_to_message_id=payload.message_id,
                 status="pending",
-                raw_payload={"auto_generated_by_ai": True, "model": ai_result.get("model_used")},
+                raw_payload={"auto_generated_by_ai": not analysis_failed, "model": ai_result.get("model_used"),
+                             "analysis_status": ai_result.get("analysis_status"),
+                             "failure_reason": ai_result.get("failure_reason")},
             )
 
     try:
@@ -540,7 +548,7 @@ async def receive_incoming_email(
         email_record.application_id or "none",
     )
 
-    if matched_case is not None and payload.ai_summary is None:
+    if matched_case is not None and payload.ai_summary is None and not analysis_failed:
         payment_reply = case_workflow.process_approved_case(db, matched_case)
         if payment_reply and auto_reply_record is not None:
             name = matched_case.patient_name or 'there'

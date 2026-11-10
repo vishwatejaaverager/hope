@@ -82,9 +82,13 @@ or set `AUTO_MIGRATE=1`. The migration adds
   This does not add a scheduled payment-status poller.
 - Approval updates use SMTP when configured, otherwise the configured Zapier hook;
   undelivered messages remain in the outgoing queue.
-- OpenRouter replies are conversational without internal status reports. Missing
-  keys/provider failures use a labelled heuristic fallback in the outgoing email's
-  metadata. The fallback cannot verify documents or automatically approve a case.
+- OpenRouter replies are conversational without internal status reports. If every
+  configured model attempt fails (or no API key is configured), the applicant gets
+  a review-failure notice through the normal email transport. Existing evidence
+  and case decisions are preserved; that attempt cannot trigger a payout. The
+  outgoing email records `analysis_status=failed` and an internal failure reason.
+  No automatic retry job is implied; the notice asks for a later retry with the
+  relevant documents. Heuristic analysis is retained only for explicit test mode.
 
 Existing paid cases without a case-linked payout require manual reconciliation;
 this migration intentionally does not infer historical payment links.

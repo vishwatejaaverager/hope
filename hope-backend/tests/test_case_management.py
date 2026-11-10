@@ -1,4 +1,5 @@
 import uuid
+from unittest.mock import Mock
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -316,6 +317,9 @@ def test_auto_link_incoming_and_outgoing_emails_and_ai_summary(client, db_sessio
 
 
 def test_incoming_email_auto_creates_case_and_ai_living_summary(client, db_session, monkeypatch):
+    monkeypatch.setenv('DISABLE_OPENROUTER_IN_TESTS', '1')
+    monkeypatch.setattr('app.api.routes.email.requests.post', Mock())
+    monkeypatch.setattr('app.services.smtp_service.smtp_configured', lambda: False)
     monkeypatch.delenv("OPENROUTER_API", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
 
