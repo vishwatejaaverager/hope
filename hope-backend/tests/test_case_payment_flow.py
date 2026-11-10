@@ -462,3 +462,19 @@ def test_provider_can_fetch_attachment_while_analysis_is_waiting(client, db_sess
             assert response.status_code == 201
             assert response.json()['outgoing_email_id']
     asyncio.run(run_request())
+
+
+def test_missing_document_notice_clears_when_remaining_files_arrive():
+    from app.services.approval_policy import constrain_email_analysis
+    attachments, checks = document_fixture()
+    first = constrain_email_analysis({'patient_name': 'Ramesh Kumar', 'requested_amount': 125,
+        'document_checks': checks[:1], 'verification_issues': ['Missing official hospital cost estimate',
+                                                             'Missing government-issued identification for the patient']},
+        'test@example.com', None, '', attachments[:1])
+    assert first['verification_issues'] == []
+    for check in checks[1:]:
+        check['attachment_index'] -= 1
+    second = constrain_email_analysis({'patient_name': 'Ramesh Kumar', 'requested_amount': 125,
+        'document_checks': checks[1:]}, 'test@example.com', None, '', attachments[1:],
+        existing_evidence=first['verification_evidence'], existing_issues=first['verification_issues'])
+    assert second['status'] == 'approved'

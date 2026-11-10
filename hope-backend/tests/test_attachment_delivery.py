@@ -70,3 +70,108 @@ def test_imap_does_not_drop_files_when_zapier_stored_text_first(client, db_sessi
     assert stored.attachment_count == 1
     assert '/api/v1/emails/attachments/' in stored.attachment_metadata[0]['url']
     assert db_session.execute(select(func.count()).select_from(EmailAttachment)).scalar_one() == 1
+
+
+def test_text_only_zapier_waits_for_authoritative_mailbox_delivery(client, db_session, monkeypatch):
+    monkeypatch.setattr(imap_service, 'imap_configured', lambda: True)
+    analysis = Mock(side_effect=AssertionError('Do not review an incomplete Zapier event'))
+    monkeypatch.setattr(ai_service, 'analyze_incoming_email', analysis)
+    response = client.post('/api/v1/emails/incoming', headers=HEADERS, json={
+        'message_id': 'wait-for-files', 'sender': 'patient@example.com', 'recipient': 'support@hope.org',
+        'subject': 'Application', 'body_plain': 'Prescription attached.',
+    })
+    assert response.status_code == 202
+    assert response.json()['status'] == 'awaiting_mailbox'
+    analysis.assert_not_called()
+    queued = db_session.execute(select(IncomingEmail)).scalar_one()
+    assert queued.raw_payload['intake_status'] == 'awaiting_mailbox'
+    assert db_session.execute(select(func.count()).select_from(OutgoingEmail)).scalar_one() == 0
+
+
+def test_complete_mailbox_delivery_is_not_deferred(db_session, monkeypatch):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.db import get_db
+    monkeypatch.setattr(imap_service, 'imap_configured', lambda: True)
+    monkeypatch.setattr(imap_service, 'start_poller', Mock())
+    app.dependency_overrides[get_db] = lambda: db_session
+    try:
+        with TestClient(app, client=('127.0.0.1', 12345)) as local:
+            response = local.post('/api/v1/emails/incoming', headers=HEADERS, json={
+                'message_id': 'complete-mailbox', 'sender': 'patient@example.com', 'recipient': 'support@hope.org',
+                'body_plain': 'No attachments on this actual message.', 'ai_summary': 'No review in this fixture',
+            })
+            assert response.status_code == 201
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_zapier_then_mailbox_reviews_actual_attachment_once(client, db_session, monkeypatch):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.db import get_db
+    monkeypatch.setattr(imap_service, 'imap_configured', lambda: True)
+    monkeypatch.setattr(imap_service, 'start_poller', Mock())
+    monkeypatch.setattr(imap_service, 'SessionLocal', TestingSessionLocal)
+    monkeypatch.setattr('app.services.smtp_service.smtp_configured', lambda: False)
+    monkeypatch.setenv('EMAIL_WEBHOOK_SECRET', TEST_SECRET)
+    message_id = '<queued-attachment@example.com>'
+    response = client.post('/api/v1/emails/incoming', headers=HEADERS, json={
+        'message_id': message_id, 'sender': 'patient@example.com', 'recipient': 'support@hope.org',
+        'body_plain': 'Please review the attached prescription.',
+    })
+    assert response.status_code == 202
+    message = EmailMessage()
+    message['Message-ID'] = message_id
+    message['From'] = 'patient@example.com'
+    message['To'] = 'support@hope.org'
+    message['Subject'] = 'Medical document'
+    message.set_content('Please review the attached prescription.')
+    message.add_attachment(b'image-fixture', maintype='image', subtype='png', filename='prescription.png')
+    analysis = Mock(return_value={'patient_name': 'Patient', 'status': 'under_review',
+                                  'auto_reply_body': 'Thank you for the prescription. Please provide the hospital estimate and patient ID.'})
+    monkeypatch.setattr(ai_service, 'analyze_incoming_email', analysis)
+    app.dependency_overrides[get_db] = lambda: db_session
+    try:
+        with TestClient(app, client=('127.0.0.1', 12345)) as local:
+            def post(url, **kwargs):
+                if url.startswith('http://127.0.0.1:'):
+                    result = local.post('/api/v1/emails/incoming', headers=kwargs['headers'], json=kwargs['json'])
+                    return Mock(ok=result.is_success, status_code=result.status_code, text=result.text)
+                return Mock(ok=True)  # Outgoing email transport, not a second ingest.
+            monkeypatch.setattr(imap_service.requests, 'post', post)
+            assert imap_service._process_message(message.as_bytes()) is True
+            assert imap_service._process_message(message.as_bytes()) is True
+    finally:
+        app.dependency_overrides.clear()
+    assert analysis.call_count == 1
+    assert analysis.call_args.kwargs['attachment_metadata'][0]['filename'] == 'prescription.png'
+    assert analysis.call_args.kwargs['attachment_metadata'][0]['url'].startswith('https://')
+    db_session.expire_all()
+    row = db_session.execute(select(IncomingEmail)).scalar_one()
+    assert row.raw_payload['intake_status'] == 'processed'
+    assert row.attachment_count == 1
+    assert db_session.execute(select(func.count()).select_from(OutgoingEmail)).scalar_one() == 1
+
+
+def test_pending_mail_is_found_even_if_other_client_marked_it_read(client, db_session, monkeypatch):
+    monkeypatch.setattr(imap_service, 'imap_configured', lambda: True)
+    monkeypatch.setattr(imap_service, 'SessionLocal', TestingSessionLocal)
+    monkeypatch.setenv('IMAP_HOST', 'test.invalid')
+    monkeypatch.setenv('IMAP_USER', 'test-user')
+    monkeypatch.setenv('IMAP_PASSWORD', 'test-password')
+    client.post('/api/v1/emails/incoming', headers=HEADERS, json={
+        'message_id': '<already-read@example.com>', 'sender': 'patient@example.com', 'recipient': 'support@hope.org',
+    })
+    connection = Mock()
+    connection.search.side_effect = [('OK', [b'']), ('OK', [b'7'])]
+    connection.fetch.return_value = ('OK', [(b'7 BODY', b'raw-message')])
+    context = Mock()
+    context.__enter__ = Mock(return_value=connection)
+    context.__exit__ = Mock(return_value=False)
+    monkeypatch.setattr(imap_service.imaplib, 'IMAP4_SSL', Mock(return_value=context))
+    process = Mock(return_value=True)
+    monkeypatch.setattr(imap_service, '_process_message', process)
+    assert imap_service.poll_once() == 1
+    process.assert_called_once_with(b'raw-message')
+    assert connection.search.call_args_list[1].args == (None, 'HEADER', 'Message-ID', '"<already-read@example.com>"')

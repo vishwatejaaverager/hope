@@ -152,3 +152,11 @@ reuses previously saved files when retried.
 This does not retrieve historical files that were never saved: IMAP still reads
 unread mail, and a Zapier-only delivery must include attachment fields. Resend
 missing documents in a new email if they are no longer available to the reader.
+
+When IMAP is configured, a text-only external webhook is now saved with
+`intake_status=awaiting_mailbox` and acknowledged with HTTP 202. It does not run
+analysis or send a premature missing-attachment reply. The mailbox reader saves
+the actual MIME files, resumes the queued email once, and records it as processed.
+Pending Message-IDs are searched explicitly even if another mail client marked
+them read. This targeted recovery does not scan or analyze the whole historical
+mailbox. IMAP connection/read operations have a 20-second socket timeout.

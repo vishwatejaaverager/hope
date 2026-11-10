@@ -40,6 +40,16 @@ def constrain_email_analysis(analysis: dict[str, Any], sender: str, subject: str
     checks = checks if isinstance(checks, list) else []
     issues = result.get('verification_issues')
     issues = list(map(str, issues)) if isinstance(issues, list) else []
+    def absent_document_notice(issue: str) -> bool:
+        lowered = issue.lower()
+        return (lowered.startswith('missing ') and
+                any(label in lowered for label in ('cost estimate', 'government-issued identification',
+                    'government identification', 'government id', 'medical record', 'medical report')) and
+                not any(detail in lowered for detail in ('signature', 'stamp', 'date', 'amount', 'name', 'alteration')))
+    # Required-document absence is recomputed below. Do not persist it as an
+    # authenticity warning that survives after the missing file is supplied.
+    issues = [issue for issue in issues if not absent_document_notice(issue)]
+    existing_issues = [str(issue) for issue in (existing_issues or []) if not absent_document_notice(str(issue))]
     newly_verified = set()
     sources_used = {item.get('source_id'): kind for kind, item in evidence.items()}
     for check in checks:

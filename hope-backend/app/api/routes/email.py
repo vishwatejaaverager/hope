@@ -219,6 +219,35 @@ def receive_incoming_email(
             detail="Invalid or missing webhook secret.",
         )
 
+    # When the direct mailbox reader is enabled, do not let a text-only Zapier
+    # event win the race and send a "missing files" reply before IMAP downloads
+    # the actual MIME attachments. IMAP posts locally after saving those files.
+    from_mailbox = request.client is not None and request.client.host in {"127.0.0.1", "::1"}
+    documents_available = any(
+        str(doc.get("url") or "").startswith(("https://", "http://")) or doc.get("extracted_text")
+        for doc in attachment_service.normalize(payload.attachment_metadata)
+    )
+    if imap_service.imap_configured() and not from_mailbox and not documents_available:
+        queued = db.execute(select(IncomingEmail).where(IncomingEmail.message_id == payload.message_id)).scalar_one_or_none()
+        if queued is None:
+            queued = IncomingEmail(
+                message_id=payload.message_id, sender=payload.sender, recipient=payload.recipient,
+                subject=payload.subject, body_plain=payload.body_plain, body_html=payload.body_html,
+                attachment_count=0, received_at=payload.received_at or datetime.now(timezone.utc),
+                raw_payload={'intake_status': 'awaiting_mailbox'},
+            )
+            db.add(queued)
+            try:
+                db.commit()
+            except IntegrityError:
+                db.rollback()  # A concurrent full mailbox delivery already stored it.
+        response.status_code = status.HTTP_202_ACCEPTED
+        logger.info("Deferring text-only email webhook to the configured mailbox reader")
+        return IncomingEmailResponse(
+            status="awaiting_mailbox", message_id=payload.message_id,
+            message="Awaiting the full mailbox delivery before document analysis. No review or reply has been generated.",
+        )
+
     # 2. Check for Duplicate Message ID
     try:
         existing = db.execute(
@@ -235,7 +264,12 @@ def receive_incoming_email(
             detail="Database error. Please try again.",
         )
 
-    if existing is not None:
+    resume_from_mailbox = False
+    if existing is not None and isinstance(existing.raw_payload, dict) and existing.raw_payload.get('intake_status') == 'awaiting_mailbox' and from_mailbox:
+        existing = db.execute(select(IncomingEmail).where(IncomingEmail.id == existing.id)
+                              .with_for_update().execution_options(populate_existing=True)).scalar_one()
+        resume_from_mailbox = (existing.raw_payload or {}).get('intake_status') == 'awaiting_mailbox'
+    if existing is not None and not resume_from_mailbox:
         documents = attachment_service.merge(existing.attachment_metadata, payload.attachment_metadata)
         documents = attachment_service.merge(documents, attachment_service.stored_metadata(db, [payload.message_id]).get(payload.message_id, []))
         existing.attachment_metadata = documents or None
@@ -307,6 +341,8 @@ def receive_incoming_email(
         raw_body_dict = payload.model_dump(exclude={"webhook_secret"}, mode="json")
     except Exception:
         pass
+
+    raw_body_dict['intake_status'] = 'processed'
 
     # 6. Auto-resolve linked Case if possible
     matched_case = _resolve_case(
@@ -452,7 +488,7 @@ def receive_incoming_email(
     resolved_app_id = payload.application_id or (matched_case.case_number if matched_case else None)
 
     # 9. Create database record (no per-email ai_summary; documents stored in attachment_metadata)
-    email_record = IncomingEmail(
+    email_values = dict(
         case_id=matched_case.id if matched_case else None,
         message_id=payload.message_id,
         sender=payload.sender,
@@ -466,6 +502,12 @@ def receive_incoming_email(
         raw_payload=raw_body_dict if raw_body_dict else None,
         received_at=received_timestamp,
     )
+    if resume_from_mailbox:
+        email_record = existing
+        for field, value in email_values.items():
+            setattr(email_record, field, value)
+    else:
+        email_record = IncomingEmail(**email_values)
 
     # 9b. Auto-generate & queue AI Reply email if payload did not explicitly disable auto-reply
     auto_reply_record: Optional[OutgoingEmail] = None

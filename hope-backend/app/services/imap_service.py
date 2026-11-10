@@ -102,8 +102,10 @@ def _process_message(raw: bytes) -> bool:
         if existing is not None:
             existing.attachment_metadata = attachment_service.merge(existing.attachment_metadata, attachments) or None
             existing.attachment_count = len(existing.attachment_metadata or [])
+            waiting = isinstance(existing.raw_payload, dict) and existing.raw_payload.get('intake_status') == 'awaiting_mailbox'
             db.commit()
-            return True  # Attach files without another AI reply or payout.
+            if not waiting:
+                return True  # Already reviewed; attach files without another reply or payout.
         db.commit()
 
     try:
@@ -137,13 +139,30 @@ def poll_once() -> int:
     host = os.environ["IMAP_HOST"].strip()
     port = int(os.getenv("IMAP_PORT", "993"))
     handled = 0
-    with imaplib.IMAP4_SSL(host, port) as conn:
+    with imaplib.IMAP4_SSL(host, port, timeout=20) as conn:
         conn.login(os.environ["IMAP_USER"].strip(), os.environ["IMAP_PASSWORD"])
         conn.select("INBOX")
         status, data = conn.search(None, "UNSEEN")
         if status != "OK":
             return 0
-        for num in data[0].split():
+        message_numbers = list(data[0].split())
+        # A Zapier/mail client may have marked the message read before this poll.
+        # Recover only explicitly queued messages, not the entire historical inbox.
+        with SessionLocal() as db:
+            pending_ids = db.execute(
+                select(IncomingEmail.message_id)
+                .where(IncomingEmail.raw_payload['intake_status'].as_string() == 'awaiting_mailbox')
+                .order_by(IncomingEmail.created_at).limit(25)
+            ).scalars().all()
+        for message_id in pending_ids:
+            if any(character in message_id for character in ('\r', '\n', '"', '\\')):
+                continue
+            found_status, found = conn.search(None, 'HEADER', 'Message-ID', f'"{message_id}"')
+            if found_status == 'OK' and found:
+                for number in found[0].split():
+                    if number not in message_numbers:
+                        message_numbers.append(number)
+        for num in message_numbers:
             status, fetched = conn.fetch(num, "(BODY.PEEK[])")
             if status != "OK" or not fetched or not isinstance(fetched[0], tuple):
                 continue
