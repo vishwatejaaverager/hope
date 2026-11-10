@@ -270,7 +270,7 @@ export function EmailCommunicationsPanel({ emails }: { emails: EmailRow[] }) {
                 </div>
 
                 {/* Documents / Attachments Section */}
-                {selected.attachmentCount > 0 && (
+                {selected.isIncoming && (
                   <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
                     <div className="text-xs font-bold uppercase tracking-wider text-slate-700">
                       Documents ({selected.attachmentCount})
@@ -324,7 +324,7 @@ export function EmailCommunicationsPanel({ emails }: { emails: EmailRow[] }) {
                       </ul>
                     ) : (
                       <p className="mt-1 text-xs text-slate-500">
-                        {selected.attachmentCount} attachment(s) recorded on this message.
+                        No attachment files were received for this email. Files visible in your mailbox must also reach Hope before they can appear here.
                       </p>
                     )}
                   </div>

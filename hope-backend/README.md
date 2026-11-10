@@ -139,3 +139,16 @@ uses blocking AI, payment, and SMTP clients. This leaves the event loop availabl
 for vision providers to fetch attachment URLs from the same Uvicorn process while
 analysis is in progress. Attachment downloads also keep blocking database reads
 out of the event loop.
+
+## Attachment delivery and dashboard visibility
+
+Incoming email lists merge attachment metadata with files saved under the same
+Message-ID, so the dashboard can display existing binary files even if an earlier
+webhook omitted attachment metadata. A duplicate webhook enriches attachment data
+without repeating analysis, emails, or payouts. IMAP also attaches missing files
+to an email already created by Zapier instead of skipping the whole message, and
+reuses previously saved files when retried.
+
+This does not retrieve historical files that were never saved: IMAP still reads
+unread mail, and a Zapier-only delivery must include attachment fields. Resend
+missing documents in a new email if they are no longer available to the reader.

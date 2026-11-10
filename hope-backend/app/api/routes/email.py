@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.core.security import verify_session_token, verify_webhook_secret
 from app.db import get_db
 from app.models import Case, EmailAttachment, IncomingEmail, OutgoingEmail
-from app.services import ai_service, imap_service, smtp_service, case_workflow, approval_policy
+from app.services import ai_service, imap_service, smtp_service, case_workflow, approval_policy, attachment_service
 from app.schemas.email import (
     IncomingEmailListItem,
     IncomingEmailPayload,
@@ -236,6 +236,11 @@ def receive_incoming_email(
         )
 
     if existing is not None:
+        documents = attachment_service.merge(existing.attachment_metadata, payload.attachment_metadata)
+        documents = attachment_service.merge(documents, attachment_service.stored_metadata(db, [payload.message_id]).get(payload.message_id, []))
+        existing.attachment_metadata = documents or None
+        existing.attachment_count = len(documents)
+        db.commit()
         logger.info(
             "Duplicate incoming email skipped: message_id=%s, existing_id=%s, app_id=%s",
             _mask_identifier(payload.message_id),
@@ -255,7 +260,10 @@ def receive_incoming_email(
         )
 
     # 3. Format and normalize attachment metadata as a clean list of {filename, url} (+ optional content_type/size)
-    raw_attachments = payload.attachment_metadata or []
+    raw_attachments = attachment_service.merge(
+        payload.attachment_metadata,
+        attachment_service.stored_metadata(db, [payload.message_id]).get(payload.message_id, []),
+    )
     serialized_attachments: list[dict[str, Any]] = []
     for idx, att in enumerate(raw_attachments):
         raw_dict = att.model_dump(exclude_none=True) if hasattr(att, "model_dump") else (att if isinstance(att, dict) else {"url": str(att)})
@@ -673,6 +681,8 @@ async def list_incoming_emails(
         stmt = stmt.where(IncomingEmail.sender == sender.strip())
 
     rows = db.execute(stmt.offset(offset).limit(limit)).scalars().all()
+    saved_files = attachment_service.stored_metadata(db, [row.message_id for row in rows])
+    resolved_files = {row.id: attachment_service.merge(row.attachment_metadata, saved_files.get(row.message_id, [])) for row in rows}
     return [
         IncomingEmailListItem(
             id=str(r.id),
@@ -683,8 +693,8 @@ async def list_incoming_emails(
             subject=r.subject,
             body_plain=r.body_plain,
             body_html=r.body_html,
-            attachment_metadata=r.attachment_metadata,
-            attachment_count=r.attachment_count,
+            attachment_metadata=resolved_files[r.id],
+            attachment_count=len(resolved_files[r.id]),
             application_id=r.application_id,
             received_at=r.received_at,
             created_at=r.created_at,

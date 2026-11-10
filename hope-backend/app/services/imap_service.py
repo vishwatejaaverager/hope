@@ -16,6 +16,7 @@ from sqlalchemy import select
 
 from app.db import SessionLocal
 from app.models import EmailAttachment, IncomingEmail
+from app.services import attachment_service
 
 logger = logging.getLogger(__name__)
 
@@ -63,8 +64,8 @@ def _process_message(raw: bytes) -> bool:
         return True  # never process our own outgoing mail
 
     with SessionLocal() as db:
-        if db.execute(select(IncomingEmail.id).where(IncomingEmail.message_id == message_id)).first():
-            return True
+        existing = db.execute(select(IncomingEmail).where(IncomingEmail.message_id == message_id)).scalar_one_or_none()
+        saved_files = db.execute(select(EmailAttachment).where(EmailAttachment.message_id == message_id)).scalars().all()
 
         body_part = msg.get_body(preferencelist=("plain",))
         html_part = msg.get_body(preferencelist=("html",))
@@ -78,15 +79,16 @@ def _process_message(raw: bytes) -> bool:
             if not data or len(data) > MAX_ATTACHMENT_BYTES:
                 continue
             ctype = part.get_content_type()
-            record = EmailAttachment(
-                message_id=message_id,
-                filename=filename,
-                content_type=ctype,
-                size=len(data),
-                data=data,
-            )
-            db.add(record)
-            db.flush()
+            record = next((item for item in saved_files
+                           if item.filename == filename and item.data == data), None)
+            if record is None:
+                record = EmailAttachment(
+                    message_id=message_id, filename=filename, content_type=ctype,
+                    size=len(data), data=data,
+                )
+                db.add(record)
+                db.flush()
+                saved_files.append(record)
             doc: dict[str, Any] = {
                 "filename": filename,
                 "url": f"{_base_url()}/api/v1/emails/attachments/{record.id}",
@@ -97,6 +99,11 @@ def _process_message(raw: bytes) -> bool:
             if text:
                 doc["extracted_text"] = text
             attachments.append(doc)
+        if existing is not None:
+            existing.attachment_metadata = attachment_service.merge(existing.attachment_metadata, attachments) or None
+            existing.attachment_count = len(existing.attachment_metadata or [])
+            db.commit()
+            return True  # Attach files without another AI reply or payout.
         db.commit()
 
     try:
