@@ -16,13 +16,14 @@ logger = logging.getLogger(__name__)
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
-# Free multimodal vision models on OpenRouter (fallback chain)
-DEFAULT_VISION_MODEL = "openrouter/free"
+# Paid vision models for predictable document-analysis routing.
+DEFAULT_VISION_MODEL = "google/gemini-3-flash-preview"
 FALLBACK_MODELS = [
-    "openrouter/free",
-    "google/gemma-4-31b-it:free",
-    "openai/gpt-4o-mini",
+    DEFAULT_VISION_MODEL,
+    "openai/gpt-4.1-mini",
+    "google/gemini-3.1-flash-lite-preview",
 ]
+MAX_ANALYSIS_TOKENS = 4096
 
 
 def get_openrouter_api_key() -> Optional[str]:
@@ -276,6 +277,9 @@ def analyze_incoming_email(
         return _analysis_failure(sender, subject, 'analysis_not_configured')
 
     configured_model = os.getenv("OPENROUTER_MODEL", "").strip()
+    if configured_model and configured_model not in FALLBACK_MODELS:
+        logger.warning("Ignoring unsupported document model override; using the paid vision chain")
+        configured_model = ""
     models_to_try = ([configured_model] if configured_model else []) + [
         m for m in FALLBACK_MODELS if m != configured_model
     ]
@@ -339,9 +343,11 @@ def analyze_incoming_email(
                     {"role": "user", "content": user_content},
                 ],
                 "temperature": 0.1,
+                "max_tokens": MAX_ANALYSIS_TOKENS,
+                "response_format": {"type": "json_object"},
             }
-            if "openai/" in model_name:
-                payload_json["response_format"] = {"type": "json_object"}
+            if model_name.startswith("google/gemini-3"):
+                payload_json["reasoning"] = {"effort": "minimal"}
 
             resp = requests.post(
                 OPENROUTER_URL,

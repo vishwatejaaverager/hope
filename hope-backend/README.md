@@ -119,3 +119,17 @@ without evidence to review, without changing existing payout records.
 These checks establish completeness and consistency, not proof that an issuer,
 stamp, signature, or identity document is authentic. External issuer/identity
 verification is not implemented.
+
+## Paid analysis model routing
+
+Document analysis now tries these paid vision models in order:
+
+1. `google/gemini-3-flash-preview`
+2. `openai/gpt-4.1-mini`
+3. `google/gemini-3.1-flash-lite-preview`
+
+`OPENROUTER_MODEL` can prioritize one of those three without duplicating attempts.
+Old free-model or unsupported overrides are ignored with a warning. Each request
+uses JSON output and a 4,096-token completion cap; Gemini uses minimal reasoning
+effort. The existing OpenRouter API key and account credits are used. If all three
+attempts fail, the applicant receives the existing analysis-failure notice.

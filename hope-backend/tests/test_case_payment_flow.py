@@ -391,3 +391,27 @@ def test_successful_fallback_model_does_not_send_failure_notice(monkeypatch):
     assert result['analysis_status'] == 'completed'
     assert 'failure_reason' not in result
     assert result['auto_reply_body'] == 'Thank you for submitting your documents.'
+
+
+@pytest.mark.parametrize('override, expected', [
+    (None, ['google/gemini-3-flash-preview', 'openai/gpt-4.1-mini', 'google/gemini-3.1-flash-lite-preview']),
+    ('openrouter/free', ['google/gemini-3-flash-preview', 'openai/gpt-4.1-mini', 'google/gemini-3.1-flash-lite-preview']),
+    ('openai/gpt-4.1-mini', ['openai/gpt-4.1-mini', 'google/gemini-3-flash-preview', 'google/gemini-3.1-flash-lite-preview']),
+])
+def test_paid_model_chain_and_token_budget(monkeypatch, override, expected):
+    monkeypatch.delenv('DISABLE_OPENROUTER_IN_TESTS')
+    monkeypatch.delenv('OPENROUTER_MODEL', raising=False)
+    if override:
+        monkeypatch.setenv('OPENROUTER_MODEL', override)
+    monkeypatch.setattr(ai_service, 'get_openrouter_api_key', lambda: 'test-key')
+    failed = Mock(ok=False, status_code=503, text='Unavailable')
+    post = Mock(return_value=failed)
+    monkeypatch.setattr(ai_service.requests, 'post', post)
+    ai_service.analyze_incoming_email('test@example.com', 'Application', 'Review please.')
+    bodies = [call.kwargs['json'] for call in post.call_args_list]
+    assert [body['model'] for body in bodies] == expected
+    for body in bodies:
+        assert body['max_tokens'] == 4096
+        assert body['response_format'] == {'type': 'json_object'}
+        if body['model'].startswith('google/'):
+            assert body['reasoning'] == {'effort': 'minimal'}
