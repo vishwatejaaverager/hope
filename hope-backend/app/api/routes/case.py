@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.core.security import authenticate_request
 from app.db import get_db
-from app.models import Case, IncomingEmail, OutgoingEmail, Payout
+from app.models import Case, IncomingEmail, OutgoingEmail, Payout, CaseDocument, CaseReview
 from app.schemas.case import (
     CaseCreate,
     CaseDetailResponse,
@@ -22,7 +22,7 @@ from app.schemas.case import (
     CaseTimelineItem,
     CaseUpdate,
 )
-from app.services import ai_service, paypal_service, case_workflow
+from app.services import ai_service, paypal_service, case_workflow, document_review_store
 from app.services.paypal_service import PayPalError
 
 logger = logging.getLogger(__name__)
@@ -97,6 +97,8 @@ def _build_case_response(c: Case) -> CaseResponse:
         status=c.status,
         approval_source=c.approval_source,
         review_report=c.review_report,
+        verification_evidence=c.verification_evidence,
+        verification_issues=c.verification_issues,
         overall_summary=c.overall_summary,
         next_action=c.next_action,
         pending_items=c.pending_items,
@@ -108,7 +110,7 @@ def _build_case_response(c: Case) -> CaseResponse:
     )
 
 
-def _build_case_detail_response(c: Case) -> CaseDetailResponse:
+def _build_case_detail_response(c: Case, db: Session) -> CaseDetailResponse:
     base = _build_case_response(c)
     timeline: list[CaseTimelineItem] = []
 
@@ -161,6 +163,12 @@ def _build_case_detail_response(c: Case) -> CaseDetailResponse:
     return CaseDetailResponse(
         **base.model_dump(),
         timeline=timeline,
+        documents=[document_review_store.serialize_document(doc) for doc in db.execute(
+            select(CaseDocument).where(CaseDocument.case_id == c.id).order_by(CaseDocument.created_at, CaseDocument.id)).scalars()],
+        reviews=[{'id': str(review.id), 'email_id': str(review.email_id), 'report': review.report,
+                  'reply_draft': review.reply_draft, 'created_at': review.created_at.isoformat()}
+                 for review in db.execute(select(CaseReview).where(CaseReview.case_id == c.id)
+                                          .order_by(CaseReview.created_at, CaseReview.id)).scalars()],
     )
 
 
@@ -327,7 +335,7 @@ def get_case_detail(
     if not case_row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found.")
 
-    return _build_case_detail_response(case_row)
+    return _build_case_detail_response(case_row, db)
 
 
 @router.patch(
@@ -439,7 +447,7 @@ def link_email_to_case(
     case_row.email_exchanges = _compute_ordered_exchanges(case_row)
     db.commit()
     db.refresh(case_row)
-    return _build_case_detail_response(case_row)
+    return _build_case_detail_response(case_row, db)
 
 
 @router.post(

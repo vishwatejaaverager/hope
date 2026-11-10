@@ -47,6 +47,15 @@ export interface PayoutHistoryResponse {
   items: PayoutRecord[];
 }
 
+export interface ReviewReport {
+  decision?: string;
+  reviewed_at?: string;
+  explanation?: string;
+  document_statuses?: Record<string, { label: string; status: string; reason: string }>;
+  red_flags?: Array<{ id?: string; message: string; required_action?: string }>;
+  resolved_red_flags?: Array<{ id?: string; message: string; resolution?: { reason?: string } }>;
+}
+
 export interface CaseRecord {
   id: string;
   case_number: string;
@@ -61,7 +70,7 @@ export interface CaseRecord {
   currency: string;
   urgency: string;
   status: string;
-  review_report?: { document_statuses?: Record<string, { label: string; status: string; reason: string }>; explanation?: string; red_flags?: Array<{ message: string }> } | null;
+  review_report?: ReviewReport | null;
   overall_summary: string | null;
   next_action: string | null;
   pending_items: unknown;
@@ -73,6 +82,7 @@ export interface CaseRecord {
 }
 
 export interface IncomingEmailRecord {
+  review_report?: ReviewReport | null;
   id: string;
   case_id: string | null;
   message_id: string;

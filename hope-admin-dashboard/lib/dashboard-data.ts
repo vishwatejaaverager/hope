@@ -1,3 +1,4 @@
+import type { ReviewReport } from './hope-api';
 import {
   fetchCases,
   fetchDonations,
@@ -92,6 +93,7 @@ export interface CaseRow {
   status: string;
   documentStatuses: Array<{ label: string; status: string; reason: string }>;
   reviewExplanation: string;
+  reviewReport: ReviewReport | null;
   overallSummary: string;
   nextAction: string;
   pendingItemsText: string;
@@ -113,6 +115,7 @@ export interface EmailAttachmentItem {
 export interface EmailRow {
   id: string;
   rawId: string;
+  reviewReport: ReviewReport | null;
   direction: "Incoming" | "Outgoing";
   applicationId: string;
   caseId: string;
@@ -322,6 +325,7 @@ function mapCases(records: CaseRecord[]): CaseRow[] {
       status: (c.status || "new").toUpperCase(),
       documentStatuses: Object.values(c.review_report?.document_statuses || {}),
       reviewExplanation: c.review_report?.explanation || "",
+      reviewReport: c.review_report || null,
       overallSummary: c.overall_summary || "No summary yet",
       nextAction: c.next_action || "—",
       pendingItemsText: formatPendingItems(c.pending_items),
@@ -358,6 +362,7 @@ function mapEmails(
     return {
       id: `INC-${em.id}`,
       rawId: em.id,
+      reviewReport: em.review_report || null,
       direction: "Incoming",
       applicationId: em.application_id || "—",
       caseId: em.case_id || "—",
@@ -384,6 +389,7 @@ function mapEmails(
     return {
       id: `OUT-${em.id}`,
       rawId: em.id,
+      reviewReport: null,
       direction: "Outgoing",
       applicationId: em.application_id || "—",
       caseId: em.case_id || "—",

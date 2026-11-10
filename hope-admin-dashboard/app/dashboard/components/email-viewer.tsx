@@ -1,7 +1,20 @@
 'use client';
 
 import { useState } from 'react';
+import type { ReviewReport } from '@/lib/hope-api';
 import type { CaseRow, EmailRow } from '@/lib/dashboard-data';
+
+function ReviewFindings({ report }: { report: ReviewReport | null }) {
+  if (!report) return null;
+  return (
+    <details className="mt-3 rounded-lg border border-slate-200 bg-white p-3 text-sm">
+      <summary className="cursor-pointer font-semibold text-slate-800">Review findings{report.reviewed_at ? ` · ${new Date(report.reviewed_at).toLocaleString()}` : ''}</summary>
+      {report.explanation && <p className="mt-2 text-slate-700 whitespace-pre-wrap">{report.explanation}</p>}
+      {(report.red_flags || []).map((flag, index) => <div key={flag.id || index} className="mt-2 text-amber-800"><strong>Open: </strong>{flag.message}{flag.required_action && <p>{flag.required_action}</p>}</div>)}
+      {(report.resolved_red_flags || []).map((flag, index) => <div key={flag.id || index} className="mt-2 text-emerald-800"><strong>Resolved: </strong>{flag.message}{flag.resolution?.reason && <p>{flag.resolution.reason}</p>}</div>)}
+    </details>
+  );
+}
 
 export function EmailCommunicationsPanel({ emails }: { emails: EmailRow[] }) {
   const [filter, setFilter] = useState<'all' | 'Incoming' | 'Outgoing'>('all');
@@ -268,6 +281,8 @@ export function EmailCommunicationsPanel({ emails }: { emails: EmailRow[] }) {
                     )}
                   </div>
                 </div>
+
+                <ReviewFindings report={selected.reviewReport} />
 
                 {/* Documents / Attachments Section */}
                 {selected.isIncoming && (
@@ -598,6 +613,7 @@ export function MedicalCasesPanel({
                   <p className="mt-1 text-slate-600">{document.reason}</p>
                 </div>
               ))}
+              <ReviewFindings report={selectedCase.reviewReport} />
               {selectedCase.reviewExplanation && <p className="mt-3 text-sm text-slate-700">{selectedCase.reviewExplanation}</p>}
             </div>
 
@@ -647,6 +663,7 @@ export function MedicalCasesPanel({
                       <p className="mt-2 rounded bg-white p-3 text-slate-800 whitespace-pre-wrap border border-slate-200/70">
                         {em.bodyPlain}
                       </p>
+                      <ReviewFindings report={em.reviewReport} />
                       {em.attachments.length > 0 && (
                         <div className="mt-2 flex flex-wrap gap-2">
                           {em.attachments.map((att, idx) => (

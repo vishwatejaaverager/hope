@@ -89,6 +89,8 @@ class CaseTimelineItem(BaseModel):
 
 
 class CaseDetailResponse(CaseResponse):
+    documents: list[dict[str, Any]] = []
+    reviews: list[dict[str, Any]] = []
     timeline: list[CaseTimelineItem] = []
 
 

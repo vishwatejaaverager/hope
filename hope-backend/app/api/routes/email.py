@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import secrets
 import uuid
 from datetime import datetime, timezone
@@ -15,7 +16,7 @@ from sqlalchemy.orm import Session
 from app.core.security import verify_session_token, verify_webhook_secret
 from app.db import get_db
 from app.models import Case, EmailAttachment, IncomingEmail, OutgoingEmail
-from app.services import ai_service, imap_service, smtp_service, case_workflow, approval_policy, attachment_service
+from app.services import ai_service, imap_service, smtp_service, case_workflow, approval_policy, attachment_service, document_review_store
 from app.schemas.email import (
     IncomingEmailListItem,
     IncomingEmailPayload,
@@ -56,6 +57,7 @@ def _resolve_case(
     case_ref: Optional[str] = None,
     app_id: Optional[str] = None,
     sender_email: Optional[str] = None,
+    thread_references: Optional[list[str]] = None,
 ) -> Optional[Case]:
     """Attempt to resolve a Case by explicit case_ref, application_id (UUID or case_number), or patient_email."""
     for candidate in (case_ref, app_id):
@@ -75,23 +77,28 @@ def _resolve_case(
         if found:
             return found
 
+    # RFC References contains prior incoming IDs even if the immediate parent is
+    # an outgoing message whose provider-generated ID is not stored locally.
+    references = thread_references or []
+    if references:
+        linked = db.execute(select(IncomingEmail.case_id).where(
+            IncomingEmail.message_id.in_(references), IncomingEmail.case_id.is_not(None))).scalars().all()
+        unique = set(linked)
+        if len(unique) == 1:
+            return db.get(Case, unique.pop())
+        if len(unique) > 1:
+            return None
+
     if sender_email and "@" in sender_email:
         # Extract raw email if formatted like "Name <email@domain.com>"
         raw_email = sender_email.strip()
         if "<" in raw_email and ">" in raw_email:
             raw_email = raw_email.split("<", 1)[-1].split(">", 1)[0].strip()
-        found = (
-            db.execute(
-                select(Case)
-                .where(func.lower(Case.patient_email) == raw_email.lower())
-                .order_by(Case.created_at.desc())
-                .limit(1)
-            )
-            .scalars()
-            .first()
-        )
-        if found:
-            return found
+        candidates = db.execute(select(Case).where(func.lower(Case.patient_email) == raw_email.lower())
+                                .order_by(Case.created_at.desc()).limit(2)).scalars().all()
+        if len(candidates) == 1:
+            return candidates[0]
+        # Never choose the latest case when a contact has multiple patients.
 
     return None
 
@@ -265,10 +272,10 @@ def receive_incoming_email(
         )
 
     resume_from_mailbox = False
-    if existing is not None and isinstance(existing.raw_payload, dict) and existing.raw_payload.get('intake_status') == 'awaiting_mailbox' and from_mailbox:
+    if existing is not None and isinstance(existing.raw_payload, dict) and (existing.raw_payload.get('intake_status') == 'review_pending' or (existing.raw_payload.get('intake_status') == 'awaiting_mailbox' and from_mailbox)):
         existing = db.execute(select(IncomingEmail).where(IncomingEmail.id == existing.id)
                               .with_for_update().execution_options(populate_existing=True)).scalar_one()
-        resume_from_mailbox = (existing.raw_payload or {}).get('intake_status') == 'awaiting_mailbox'
+        resume_from_mailbox = (existing.raw_payload or {}).get('intake_status') in {'awaiting_mailbox', 'review_pending'}
     if existing is not None and not resume_from_mailbox:
         documents = attachment_service.merge(existing.attachment_metadata, payload.attachment_metadata)
         documents = attachment_service.merge(documents, attachment_service.stored_metadata(db, [payload.message_id]).get(payload.message_id, []))
@@ -350,11 +357,70 @@ def receive_incoming_email(
         case_ref=payload.case_id,
         app_id=payload.application_id,
         sender_email=payload.sender,
+        thread_references=re.findall(r'<[^<>]+>|[^\s,]+', ' '.join(filter(None, [payload.in_reply_to, payload.references]))),
     )
+
+    if matched_case is None and resume_from_mailbox and existing.case_id:
+        matched_case = db.get(Case, existing.case_id)
+
+    if matched_case is None:
+        candidate_case_num = (payload.application_id.strip()
+                              if payload.application_id and len(payload.application_id.strip()) <= 32
+                              else f"CASE-{datetime.now().year}-{secrets.token_hex(3).upper()}")
+        if db.execute(select(Case.id).where(Case.case_number == candidate_case_num)).first():
+            candidate_case_num = f"{candidate_case_num[:26]}-{secrets.token_hex(2).upper()}"
+        matched_case = Case(case_number=candidate_case_num,
+                            patient_email=ai_service._extract_email_address(payload.sender),
+                            status='under_review', currency='USD', urgency='medium',
+                            next_action='Review the incoming email and supporting documents')
+        db.add(matched_case)
+        db.flush()
+
+    # Register one document per attachment before analysis. The same email and
+    # document IDs are retained when the review result is saved below.
+    prepared_email = existing if resume_from_mailbox else IncomingEmail(
+        message_id=payload.message_id, sender=payload.sender, recipient=payload.recipient,
+        subject=payload.subject, body_plain=payload.body_plain, body_html=payload.body_html,
+        received_at=received_timestamp, attachment_metadata=serialized_attachments,
+        attachment_count=len(serialized_attachments), raw_payload={'intake_status': 'review_pending'})
+    prepared_email.case_id = matched_case.id if matched_case else None
+    if matched_case and matched_case.status == 'approved' and matched_case.approval_source in {approval_policy.DOCUMENT_CHECKS, 'ai_red_flag_review'}:
+        matched_case.status = 'under_review'
+        matched_case.approval_source = None
+        matched_case.next_action = 'Review the latest email and evidence before payment'
+    db.add(prepared_email)
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        duplicate = db.execute(select(IncomingEmail).where(IncomingEmail.message_id == payload.message_id)).scalar_one_or_none()
+        if duplicate is None:
+            raise
+        response.status_code = status.HTTP_200_OK
+        return IncomingEmailResponse(status='already_received', message_id=payload.message_id,
+                                     email_id=str(duplicate.id), duplicate=True,
+                                     message='The email has already been received; its review is pending or complete.')
+    document_records = document_review_store.register_documents(db, prepared_email, serialized_attachments)
+    serialized_attachments = [{**attachment, 'document_id': str(document.id)}
+                              for attachment, document in zip(serialized_attachments, document_records)]
+    for document, attachment in zip(document_records, serialized_attachments):
+        document.source_id = str(document.id)
+        document.file_metadata = attachment
+    prepared_email.attachment_metadata = serialized_attachments or None
+
+    db.commit()  # Files and their source email survive a provider/server failure.
 
     existing_context: Optional[dict[str, Any]] = None
     if matched_case:
+        matched_case = db.execute(select(Case).where(Case.id == matched_case.id)
+                                  .with_for_update().execution_options(populate_existing=True)).scalar_one()
+        if matched_case.status == 'approved' and matched_case.approval_source in {approval_policy.DOCUMENT_CHECKS, 'ai_red_flag_review'}:
+            matched_case.status = 'under_review'
+            matched_case.approval_source = None
+            matched_case.next_action = 'Review the latest email and evidence before payment'
+        document_review_store.backfill_case(db, matched_case)
         existing_context = {
+            **document_review_store.context(db, matched_case, prepared_email.id),
             "case_number": matched_case.case_number,
             "patient_name": matched_case.patient_name,
             "patient_email": matched_case.patient_email,
@@ -392,6 +458,7 @@ def receive_incoming_email(
             ai_result, payload.sender, payload.subject, payload.body_plain, serialized_attachments,
             existing_evidence=matched_case.verification_evidence if matched_case else None,
             existing_issues=matched_case.verification_issues if matched_case else None,
+            existing_report=matched_case.review_report if matched_case else None,
         )
 
     if matched_case and matched_case.status in {'rejected', 'closed'} and isinstance(ai_result, dict) and not analysis_failed:
@@ -419,39 +486,7 @@ def receive_incoming_email(
     if isinstance(ai_result, dict):
         est_cost = ai_service.to_decimal_or_none(ai_result.get("estimated_cost"))
         req_amt = ai_service.to_decimal_or_none(ai_result.get("requested_amount"))
-        if matched_case is None:
-            candidate_case_num = (
-                payload.application_id.strip()
-                if payload.application_id and len(payload.application_id.strip()) <= 32
-                else f"CASE-{datetime.now().year}-{secrets.token_hex(3).upper()}"
-            )
-            # Ensure unique case_number
-            if db.execute(select(Case).where(Case.case_number == candidate_case_num)).scalar_one_or_none():
-                candidate_case_num = f"{candidate_case_num[:26]}-{secrets.token_hex(2).upper()}"
-
-            matched_case = Case(
-                case_number=candidate_case_num,
-                patient_name=ai_result.get("patient_name"),
-                patient_email=ai_service._extract_email_address(ai_result.get("patient_email") or payload.sender),
-                medical_category=ai_result.get("medical_category") or "general",
-                treatment_description=ai_result.get("treatment_description"),
-                hospital_name=ai_result.get("hospital_name"),
-                estimated_cost=est_cost,
-                requested_amount=req_amt,
-                currency="USD",
-                urgency=str(ai_result.get("urgency") or "medium").lower(),
-                status=str(ai_result.get("status") or "new").lower(),
-                approval_source=ai_result.get("approval_source"),
-                verification_evidence=ai_result.get("verification_evidence"),
-                verification_issues=ai_result.get("verification_issues"),
-                review_report=ai_result.get("review_report"),
-                overall_summary=ai_result.get("overall_summary") or ai_result.get("summary"),
-                next_action=ai_result.get("next_action"),
-                pending_items=ai_result.get("pending_items"),
-            )
-            db.add(matched_case)
-            db.flush()
-        elif not analysis_failed:
+        if not analysis_failed:
             if ai_result.get("overall_summary"):
                 matched_case.overall_summary = str(ai_result["overall_summary"])
             if ai_result.get("next_action"):
@@ -460,6 +495,12 @@ def receive_incoming_email(
                 matched_case.pending_items = ai_result["pending_items"]
             if not matched_case.patient_name and ai_result.get("patient_name"):
                 matched_case.patient_name = str(ai_result["patient_name"])[:255]
+            if ai_result.get('medical_category'):
+                matched_case.medical_category = str(ai_result['medical_category'])[:64]
+            if ai_result.get('treatment_description'):
+                matched_case.treatment_description = str(ai_result['treatment_description'])
+            if ai_result.get('urgency'):
+                matched_case.urgency = str(ai_result['urgency']).lower()[:32]
             if not matched_case.hospital_name and ai_result.get("hospital_name"):
                 matched_case.hospital_name = str(ai_result["hospital_name"])[:255]
             if not matched_case.estimated_cost and est_cost is not None:
@@ -508,12 +549,11 @@ def receive_incoming_email(
         raw_payload=raw_body_dict if raw_body_dict else None,
         received_at=received_timestamp,
     )
-    if resume_from_mailbox:
-        email_record = existing
-        for field, value in email_values.items():
-            setattr(email_record, field, value)
-    else:
-        email_record = IncomingEmail(**email_values)
+    email_record = prepared_email
+    for field, value in email_values.items():
+        setattr(email_record, field, value)
+    if matched_case and isinstance(ai_result, dict):
+        document_review_store.save_review(db, matched_case, email_record, document_records, ai_result)
 
     # 9b. Auto-generate & queue AI Reply email if payload did not explicitly disable auto-reply
     auto_reply_record: Optional[OutgoingEmail] = None
@@ -736,6 +776,7 @@ async def list_incoming_emails(
     resolved_files = {row.id: attachment_service.merge(row.attachment_metadata, saved_files.get(row.message_id, [])) for row in rows}
     return [
         IncomingEmailListItem(
+            review_report=(r.raw_payload or {}).get('review_report'),
             id=str(r.id),
             case_id=str(r.case_id) if r.case_id else None,
             message_id=r.message_id,
@@ -811,6 +852,7 @@ async def update_incoming_email(
     db.refresh(record)
 
     return IncomingEmailListItem(
+        review_report=(record.raw_payload or {}).get('review_report'),
         id=str(record.id),
         case_id=str(record.case_id) if record.case_id else None,
         message_id=record.message_id,

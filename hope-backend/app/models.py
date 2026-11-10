@@ -3,7 +3,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Optional
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, LargeBinary, Numeric, String, Text, Uuid, func
+from sqlalchemy import Boolean, UniqueConstraint, JSON, DateTime, ForeignKey, Integer, LargeBinary, Numeric, String, Text, Uuid, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -157,3 +157,32 @@ class OutgoingEmail(Base):
 
     case: Mapped[Optional["Case"]] = relationship("Case", back_populates="outgoing_emails")
 
+
+
+class CaseDocument(Base):
+    __tablename__ = "documents"
+    __table_args__ = (UniqueConstraint('email_id', 'attachment_index', name='uq_document_email_attachment'),)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    case_id: Mapped[Optional[uuid.UUID]] = mapped_column(Uuid, ForeignKey('cases.id', ondelete='SET NULL'), index=True)
+    email_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey('incoming_emails.id', ondelete='CASCADE'), index=True)
+    attachment_index: Mapped[int] = mapped_column(Integer)
+    source_id: Mapped[str] = mapped_column(String(64), index=True)
+    filename: Mapped[str] = mapped_column(String(500))
+    file_metadata: Mapped[Any] = mapped_column(JSON().with_variant(JSONB, 'postgresql'))
+    document_type: Mapped[str] = mapped_column(String(64), default='other')
+    status: Mapped[str] = mapped_column(String(32), default='pending')
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True)
+    extracted_data: Mapped[Optional[Any]] = mapped_column(JSON().with_variant(JSONB, 'postgresql'))
+    reason: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class CaseReview(Base):
+    __tablename__ = 'case_reviews'
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    case_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey('cases.id', ondelete='CASCADE'), index=True)
+    email_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey('incoming_emails.id', ondelete='CASCADE'), unique=True)
+    report: Mapped[Any] = mapped_column(JSON().with_variant(JSONB, 'postgresql'))
+    reply_draft: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

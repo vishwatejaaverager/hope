@@ -35,7 +35,10 @@ def _extract_text(filename: str, content_type: str, data: bytes) -> Optional[str
     name = (filename or "").lower()
     try:
         if name.endswith(".pdf") or content_type == "application/pdf":
-            from pypdf import PdfReader  # optional dependency
+            try:
+                from pypdf import PdfReader
+            except ImportError:
+                from PyPDF2 import PdfReader  # compatibility with older deployments
 
             reader = PdfReader(io.BytesIO(data))
             text = "\n".join((page.extract_text() or "") for page in reader.pages[:10]).strip()
@@ -102,7 +105,7 @@ def _process_message(raw: bytes) -> bool:
         if existing is not None:
             existing.attachment_metadata = attachment_service.merge(existing.attachment_metadata, attachments) or None
             existing.attachment_count = len(existing.attachment_metadata or [])
-            waiting = isinstance(existing.raw_payload, dict) and existing.raw_payload.get('intake_status') == 'awaiting_mailbox'
+            waiting = isinstance(existing.raw_payload, dict) and existing.raw_payload.get('intake_status') in {'awaiting_mailbox', 'review_pending'}
             db.commit()
             if not waiting:
                 return True  # Already reviewed; attach files without another reply or payout.
@@ -115,6 +118,8 @@ def _process_message(raw: bytes) -> bool:
 
     payload = {
         "message_id": message_id,
+        "in_reply_to": str(msg.get("In-Reply-To", "")) or None,
+        "references": str(msg.get("References", "")) or None,
         "sender": sender_addr or str(msg.get("From", "")),
         "recipient": parseaddr(str(msg.get("To", "")))[1] or own_addr,
         "subject": str(msg.get("Subject", "")) or None,
@@ -151,7 +156,7 @@ def poll_once() -> int:
         with SessionLocal() as db:
             pending_ids = db.execute(
                 select(IncomingEmail.message_id)
-                .where(IncomingEmail.raw_payload['intake_status'].as_string() == 'awaiting_mailbox')
+                .where(IncomingEmail.raw_payload['intake_status'].as_string().in_(['awaiting_mailbox', 'review_pending']))
                 .order_by(IncomingEmail.created_at).limit(25)
             ).scalars().all()
         for message_id in pending_ids:

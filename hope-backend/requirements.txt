@@ -7,4 +7,4 @@ psycopg[binary]>=3.2
 alembic>=1.13
 pytest
 httpx
-pypdf2
+pypdf

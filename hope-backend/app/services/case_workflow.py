@@ -5,7 +5,7 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Case, Payout
+from app.models import Case, Payout, IncomingEmail
 from app.services import paypal_service, approval_policy, case_review
 from app.services.paypal_service import PayPalError
 
@@ -44,6 +44,14 @@ def process_approved_case(db: Session, case: Case) -> str | None:
     if payout is None:
         if case.status in {'disbursed', 'paid'}:
             return 'This case is already marked as paid. Our team will review its existing payment record before taking any further action.'
+        pending_review = db.execute(select(IncomingEmail.id).where(
+            IncomingEmail.case_id == case.id,
+            IncomingEmail.raw_payload['intake_status'].as_string() == 'review_pending').limit(1)).first()
+        if pending_review:
+            case.status = 'under_review'
+            case.approval_source = None
+            case.next_action = 'Complete the pending email and document review before payment'
+            return 'Your latest submission is awaiting review. Payment can be arranged after the review is complete.'
         if case.approval_source == case_review.APPROVAL_SOURCE and not case_review.authorizes_payment(case.review_report):
             case.status = 'under_review'
             case.approval_source = None

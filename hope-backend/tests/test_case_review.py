@@ -18,7 +18,7 @@ def report():
 
 
 def attachments():
-    return [{'filename': kind + '.png'} for kind in case_review.REQUIRED_DOCUMENTS]
+    return [{'filename': kind + '.png', 'url': 'https://example.com/' + kind + '.png'} for kind in case_review.REQUIRED_DOCUMENTS]
 
 
 def test_no_flags_complete_review_approves():

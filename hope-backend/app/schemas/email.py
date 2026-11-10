@@ -114,6 +114,8 @@ class IncomingEmailPayload(BaseModel):
     attachment_metadata: Optional[list[Union[AttachmentMetadata, dict[str, Any]]]] = None
     application_id: Optional[str] = Field(None, max_length=64)
     case_id: Optional[str] = Field(None, max_length=64, description="Optional Case UUID or case_number")
+    in_reply_to: Optional[str] = None
+    references: Optional[str] = None
     ai_summary: Optional[Any] = Field(None, description="Optional structured or text AI summary of the email")
     webhook_secret: Optional[str] = None
 
@@ -124,6 +126,15 @@ class IncomingEmailPayload(BaseModel):
             return values
 
         data = dict(values)
+
+        for field, aliases in {'in_reply_to': ('In-Reply-To', 'inReplyTo'), 'references': ('References',)}.items():
+            if not data.get(field):
+                for alias in aliases:
+                    if data.get(alias):
+                        data[field] = str(data[alias])
+                        break
+        if isinstance(data.get('references'), list):
+            data['references'] = ' '.join(map(str, data['references']))
 
         # 1. Normalize message_id
         if not data.get("message_id"):
@@ -279,6 +290,7 @@ class IncomingEmailResponse(BaseModel):
 
 
 class IncomingEmailListItem(BaseModel):
+    review_report: Optional[dict[str, Any]] = None
     id: str
     case_id: Optional[str] = None
     message_id: str

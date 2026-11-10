@@ -2,6 +2,7 @@
 import hashlib
 import json
 import re
+import uuid
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -22,6 +23,13 @@ def _name(value: Any) -> str:
 
 
 def _source(attachment: dict) -> str:
+    # document_id is added by the server after intake normalization, never copied
+    # from user-supplied metadata. Legacy evidence keeps its original hash.
+    if attachment.get('document_id'):
+        try:
+            return str(uuid.UUID(str(attachment['document_id'])))
+        except ValueError:
+            pass
     return hashlib.sha256(json.dumps(attachment, sort_keys=True, default=str).encode()).hexdigest()
 
 
@@ -55,10 +63,12 @@ def validity_issues(evidence: list[dict], today: date | None = None) -> list[str
 
 def constrain_email_analysis(analysis: dict[str, Any], sender: str, subject: str | None,
                              body: str | None, attachments: list[dict[str, Any]],
-                             existing_evidence: list | None = None, existing_issues: list | None = None) -> dict[str, Any]:
+                             existing_evidence: list | None = None, existing_issues: list | None = None,
+                             existing_report: dict | None = None) -> dict[str, Any]:
     if 'red_flags' in analysis or 'review_complete' in analysis:
         from app.services.case_review import evaluate
-        return evaluate(analysis, attachments, existing_evidence)
+        return evaluate(analysis, attachments, existing_evidence,
+                        existing_report or {'red_flags': existing_issues or []}, body)
 
     from app.services.ai_service import _extract_image_urls
 

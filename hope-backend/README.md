@@ -168,3 +168,49 @@ Legacy automatic document evidence must explicitly record validity conditions.
 The legacy evidence guard rechecks expiry before new payouts. New AI reviews
 inspect dates and validity in context and store their findings in the review
 report. No existing payout is repeated by either review path.
+
+## Continued document-review conversations
+
+`documents` stores one UUID primary key per attachment, with a foreign key to
+its incoming email and case. The email ID is not the document primary key: one
+email may contain several attachments. Rows retain file metadata, extracted
+facts, verification status, explanation, and whether the version is current.
+`case_reviews` stores an immutable report and draft for each reviewed email.
+Cases and source documents are committed before contacting OpenRouter; an
+interrupted `review_pending` intake can resume using the same IDs. Existing
+email metadata and reports are materialized into these tables when their case
+next receives a review. Previous snapshots are never rewritten by a follow-up.
+
+Case references and RFC `In-Reply-To`/`References` identify conversations. Sender
+email is used only when exactly one case matches; neither a name nor the latest
+case for a shared contact silently joins two patients. IMAP forwards thread
+headers. Zapier integrations should map `in_reply_to` and `references` when
+available, or retain the case reference in the subject/body.
+
+Every new analysis receives the case summary, stored document findings, prior
+review and unresolved red flags, recent incoming/outgoing messages, and the new
+email/attachments. Approved older files reuse their findings. The AI must check
+new evidence for additional concerns as well as revisit earlier concerns.
+
+Red flags have stable IDs. Omitting an old flag cannot resolve it. A
+`resolved_red_flags` entry must name the flag ID, explain the resolution, and
+reference a new readable attachment or an exact excerpt of the current email.
+Quoted history is not new confirmation. The backend validates the reference;
+the model assesses whether the evidence actually addresses the concern.
+`previous_document_updates` can reopen an older document, or resolve its review
+with supported new evidence. Contradictions can identify affected document
+sources so previously approved documents become `needs_review`. Backend-computed
+missing-document notices are refreshed as the current document set changes.
+An expired estimate may therefore be resolved by a replacement while a new
+patient-name mismatch keeps the case under review.
+
+Only readable content actually supplied to the model can support a new document
+approval. PDF text extraction uses `pypdf`; scanned PDFs without readable text
+need a readable image or additional extraction. At most four image inputs are
+sent per review; excess images cannot be silently marked reviewed. No new payout
+is created while a linked submission is `review_pending`. A failed follow-up
+suspends automatic approval without deleting prior document findings.
+
+The authenticated case-detail API returns `documents` and chronological
+`reviews`. Incoming-email lists expose each email's `review_report`. The admin
+dashboard shows current open/resolved concerns and each email's review findings.
