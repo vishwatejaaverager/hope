@@ -47,6 +47,7 @@ class CaseUpdate(BaseModel):
 
 
 class CaseResponse(BaseModel):
+    review_report: Optional[Any] = None
     approval_source: Optional[str] = None
     verification_evidence: Optional[Any] = None
     verification_issues: Optional[Any] = None

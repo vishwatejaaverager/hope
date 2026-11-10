@@ -2,13 +2,13 @@
 import hashlib
 import json
 import re
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 REVIEWER = 'reviewer'
 DOCUMENT_CHECKS = 'document_checks'
-TRUSTED_APPROVALS = {REVIEWER, DOCUMENT_CHECKS}
+TRUSTED_APPROVALS = {REVIEWER, DOCUMENT_CHECKS, 'ai_red_flag_review'}
 REQUIRED = {
     'medical_record': 'a medical prescription or consultation report',
     'cost_estimate': 'the hospital treatment cost estimate or bill',
@@ -25,9 +25,41 @@ def _source(attachment: dict) -> str:
     return hashlib.sha256(json.dumps(attachment, sort_keys=True, default=str).encode()).hexdigest()
 
 
+def validity_issues(evidence: list[dict], today: date | None = None) -> list[str]:
+    """Re-evaluate explicit validity information, including at payout time."""
+    today = today or date.today()
+    issues = []
+    for item in evidence:
+        kind = item.get('document_type', 'document')
+        prefix = f'Document validity: {kind}'
+        if item.get('validity_reviewed') is not True or 'valid_until' not in item or 'validity_days' not in item:
+            issues.append(f'{prefix} has not been checked for expiry or validity conditions')
+            continue
+        try:
+            issued = date.fromisoformat(str(item.get('document_date') or ''))
+            expires = date.fromisoformat(str(item['valid_until'])) if item['valid_until'] is not None else None
+            days = item['validity_days']
+            if days is not None and (type(days) is not int or days <= 0):
+                raise ValueError('Invalid validity period')
+            relative_expiry = issued + timedelta(days=days) if days is not None else None
+            if expires and expires < issued:
+                issues.append(f'{prefix} expires before its issue date')
+            if expires and relative_expiry and expires != relative_expiry:
+                issues.append(f'{prefix} has conflicting expiry date and validity period')
+            if any(expiry < today for expiry in (expires, relative_expiry) if expiry is not None):
+                issues.append(f'{prefix} is expired; a current document is required')
+        except (ValueError, OverflowError):
+            issues.append(f'{prefix} contains invalid validity information')
+    return issues
+
+
 def constrain_email_analysis(analysis: dict[str, Any], sender: str, subject: str | None,
                              body: str | None, attachments: list[dict[str, Any]],
                              existing_evidence: list | None = None, existing_issues: list | None = None) -> dict[str, Any]:
+    if 'red_flags' in analysis or 'review_complete' in analysis:
+        from app.services.case_review import evaluate
+        return evaluate(analysis, attachments, existing_evidence)
+
     from app.services.ai_service import _extract_image_urls
 
     result = dict(analysis)
@@ -49,7 +81,7 @@ def constrain_email_analysis(analysis: dict[str, Any], sender: str, subject: str
     # Required-document absence is recomputed below. Do not persist it as an
     # authenticity warning that survives after the missing file is supplied.
     issues = [issue for issue in issues if not absent_document_notice(issue)]
-    existing_issues = [str(issue) for issue in (existing_issues or []) if not absent_document_notice(str(issue))]
+    existing_issues = [str(issue) for issue in (existing_issues or []) if not absent_document_notice(str(issue)) and not str(issue).startswith('Document validity:')]
     newly_verified = set()
     sources_used = {item.get('source_id'): kind for kind, item in evidence.items()}
     for check in checks:
@@ -110,6 +142,12 @@ def constrain_email_analysis(analysis: dict[str, Any], sender: str, subject: str
             'document_type', 'patient_name', 'issuer', 'document_date', 'evidence_text',
             'amount', 'currency', 'diagnosis', 'clinician', 'id_type', 'id_last_four',
         ) if key in check}
+        # Null means the model explicitly found no printed expiry. Missing keys
+        # mean validity was not inspected, and must block automatic approval.
+        if 'valid_until' in check and 'validity_days' in check:
+            evidence[kind]['valid_until'] = check['valid_until']
+            evidence[kind]['validity_days'] = check['validity_days']
+            evidence[kind]['validity_reviewed'] = True
         evidence[kind]['source_id'] = source
         sources_used[source] = kind
         newly_verified.add(kind)
@@ -132,6 +170,7 @@ def constrain_email_analysis(analysis: dict[str, Any], sender: str, subject: str
     # mismatch warning. Clear old issues only after a complete fresh recheck.
     if existing_issues and (newly_verified != set(REQUIRED) or issues):
         issues.extend(map(str, existing_issues))
+    issues.extend(validity_issues(list(evidence.values())))
     complete = not missing and not issues
     result['verification_evidence'] = list(evidence.values())
     result['verification_issues'] = list(dict.fromkeys(issues))

@@ -61,6 +61,7 @@ export interface CaseRecord {
   currency: string;
   urgency: string;
   status: string;
+  review_report?: { document_statuses?: Record<string, { label: string; status: string; reason: string }>; explanation?: string; red_flags?: Array<{ message: string }> } | null;
   overall_summary: string | null;
   next_action: string | null;
   pending_items: unknown;

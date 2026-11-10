@@ -586,6 +586,21 @@ export function MedicalCasesPanel({
               </div>
             </div>
 
+            <div className="rounded-xl border border-slate-200 p-4">
+              <h3 className="text-sm font-semibold text-slate-900">Document verification</h3>
+              {selectedCase.documentStatuses.length === 0 && <p className="mt-2 text-sm text-slate-500">No document verification recorded yet.</p>}
+              {selectedCase.documentStatuses.map((document) => (
+                <div key={document.label} className="mt-3 border-t border-slate-100 pt-2 text-sm">
+                  <div className="flex justify-between gap-3">
+                    <span className="font-medium">{document.label}</span>
+                    <span className={document.status === 'approved' ? 'text-emerald-700' : 'text-amber-700'}>{document.status.replaceAll('_', ' ')}</span>
+                  </div>
+                  <p className="mt-1 text-slate-600">{document.reason}</p>
+                </div>
+              ))}
+              {selectedCase.reviewExplanation && <p className="mt-3 text-sm text-slate-700">{selectedCase.reviewExplanation}</p>}
+            </div>
+
             <div>
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500">

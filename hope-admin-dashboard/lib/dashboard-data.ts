@@ -90,6 +90,8 @@ export interface CaseRow {
   currency: string;
   urgency: string;
   status: string;
+  documentStatuses: Array<{ label: string; status: string; reason: string }>;
+  reviewExplanation: string;
   overallSummary: string;
   nextAction: string;
   pendingItemsText: string;
@@ -318,6 +320,8 @@ function mapCases(records: CaseRecord[]): CaseRow[] {
       currency: c.currency || "USD",
       urgency: (c.urgency || "medium").toUpperCase(),
       status: (c.status || "new").toUpperCase(),
+      documentStatuses: Object.values(c.review_report?.document_statuses || {}),
+      reviewExplanation: c.review_report?.explanation || "",
       overallSummary: c.overall_summary || "No summary yet",
       nextAction: c.next_action || "—",
       pendingItemsText: formatPendingItems(c.pending_items),

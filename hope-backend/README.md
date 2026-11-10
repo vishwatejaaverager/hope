@@ -102,23 +102,26 @@ are never silently skipped or stamped.
 
 ## Automatic document approval checks
 
-AI confidence flags no longer grant approval. The backend requires independently
-referenced medical, cost-estimate, and government-ID attachments, with grounded
-excerpts, patient/issuer/date details, matching patient names, a positive USD
-estimate, and requested assistance no greater than that estimate. Unreadable
-files, mismatches, or unresolved warnings block automatic approval. Use separate
-files for each document type. PDF files need extracted text; image evidence must
-reference an image actually supplied to the vision model.
+The required set is the patient's government-issued photo ID (`government_id`),
+a hospital treatment estimate or bill (`cost_estimate`), and a current medical
+report or doctor's treatment recommendation (`medical_record`). AI reads each
+attachment and reviews the entire case for red flags, including issues not
+listed in a fixed checklist. Each document gets a status, supporting excerpt,
+reason and red flags. The backend records separate `approved`, `needs_review`,
+or `missing` fields in `review_report.document_statuses`, exposed in the case
+API and dashboard. Missing or incomplete review results cannot grant approval.
 
-Server-owned `verification_evidence` and `verification_issues` persist across
-emails. An email containing only PayPal details cannot clear an unresolved
-verification warning. Approval provenance is recorded as `document_checks` or an
-explicit `reviewer` action. Startup migration returns legacy unpaid approvals
-without evidence to review, without changing existing payout records.
+Case approval requires all three document fields to be approved, a complete AI
+review, an approval recommendation, an evidence-based explanation, and no
+unresolved red flags. Previously reviewed documents persist across replies;
+a replacement of the same document type is reviewed again. An approved document
+alone does not approve the entire case. The review report, model, findings and
+email draft are stored; payment instructions reflect the backend payment state.
+Existing legacy document-check approvals retain their evidence and validity
+guards; explicit reviewer approvals remain supported.
 
-These checks establish completeness and consistency, not proof that an issuer,
-stamp, signature, or identity document is authentic. External issuer/identity
-verification is not implemented.
+These reviews assess completeness and consistency. External issuer/identity
+verification is not implemented; AI cannot prove document authenticity.
 
 ## Paid analysis model routing
 
@@ -160,3 +163,8 @@ the actual MIME files, resumes the queued email once, and records it as processe
 Pending Message-IDs are searched explicitly even if another mail client marked
 them read. This targeted recovery does not scan or analyze the whole historical
 mailbox. IMAP connection/read operations have a 20-second socket timeout.
+
+Legacy automatic document evidence must explicitly record validity conditions.
+The legacy evidence guard rechecks expiry before new payouts. New AI reviews
+inspect dates and validity in context and store their findings in the review
+report. No existing payout is repeated by either review path.

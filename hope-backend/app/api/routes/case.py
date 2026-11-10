@@ -96,6 +96,7 @@ def _build_case_response(c: Case) -> CaseResponse:
         urgency=c.urgency,
         status=c.status,
         approval_source=c.approval_source,
+        review_report=c.review_report,
         overall_summary=c.overall_summary,
         next_action=c.next_action,
         pending_items=c.pending_items,

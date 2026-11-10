@@ -361,6 +361,7 @@ def receive_incoming_email(
             "paypal_email": matched_case.paypal_email,
             "verification_evidence": matched_case.verification_evidence,
             "verification_issues": matched_case.verification_issues,
+            "review_report": matched_case.review_report,
             "medical_category": matched_case.medical_category,
             "hospital_name": matched_case.hospital_name,
             "estimated_cost": str(matched_case.estimated_cost) if matched_case.estimated_cost else None,
@@ -443,6 +444,7 @@ def receive_incoming_email(
                 approval_source=ai_result.get("approval_source"),
                 verification_evidence=ai_result.get("verification_evidence"),
                 verification_issues=ai_result.get("verification_issues"),
+                review_report=ai_result.get("review_report"),
                 overall_summary=ai_result.get("overall_summary") or ai_result.get("summary"),
                 next_action=ai_result.get("next_action"),
                 pending_items=ai_result.get("pending_items"),
@@ -466,6 +468,7 @@ def receive_incoming_email(
                 matched_case.requested_amount = req_amt
             matched_case.verification_evidence = ai_result.get('verification_evidence')
             matched_case.verification_issues = ai_result.get('verification_issues')
+            matched_case.review_report = ai_result.get('review_report')
             if matched_case.status not in ('payout_processing', 'disbursed', 'paid') and matched_case.approval_source != approval_policy.REVIEWER:
                 matched_case.status = str(ai_result['status'])
                 matched_case.approval_source = ai_result.get('approval_source')
@@ -486,6 +489,9 @@ def receive_incoming_email(
             )
 
     resolved_app_id = payload.application_id or (matched_case.case_number if matched_case else None)
+
+    if isinstance(ai_result, dict) and ai_result.get('review_report'):
+        raw_body_dict['review_report'] = ai_result['review_report']
 
     # 9. Create database record (no per-email ai_summary; documents stored in attachment_metadata)
     email_values = dict(
@@ -606,7 +612,10 @@ def receive_incoming_email(
         payment_reply = case_workflow.process_approved_case(db, matched_case)
         if payment_reply and auto_reply_record is not None:
             name = matched_case.patient_name or 'there'
-            auto_reply_record.body_plain = f"Hi {name},\n\n{payment_reply}\n\nCase: {matched_case.case_number}\n\nWarm regards,\nHope Medical Team"
+            if matched_case.approval_source == 'ai_red_flag_review':
+                auto_reply_record.body_plain = f"{auto_reply_record.body_plain}\n\nPayment update:\n{payment_reply}\n\nCase: {matched_case.case_number}"
+            else:
+                auto_reply_record.body_plain = f"Hi {name},\n\n{payment_reply}\n\nCase: {matched_case.case_number}\n\nWarm regards,\nHope Medical Team"
         db.commit()
 
     # 10a. Prefer direct SMTP (sets In-Reply-To/References so Gmail threads it as a reply)

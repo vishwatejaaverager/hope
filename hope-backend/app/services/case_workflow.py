@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Case, Payout
-from app.services import paypal_service, approval_policy
+from app.services import paypal_service, approval_policy, case_review
 from app.services.paypal_service import PayPalError
 
 EMAIL_RE = r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+"
@@ -44,6 +44,19 @@ def process_approved_case(db: Session, case: Case) -> str | None:
     if payout is None:
         if case.status in {'disbursed', 'paid'}:
             return 'This case is already marked as paid. Our team will review its existing payment record before taking any further action.'
+        if case.approval_source == case_review.APPROVAL_SOURCE and not case_review.authorizes_payment(case.review_report):
+            case.status = 'under_review'
+            case.approval_source = None
+            case.next_action = 'Complete the case review and resolve red flags before payment'
+            return 'Your case needs further review before payment can be arranged.'
+        if case.approval_source == approval_policy.DOCUMENT_CHECKS:
+            date_issues = approval_policy.validity_issues(case.verification_evidence or [])
+            if date_issues:
+                case.status = 'under_review'
+                case.approval_source = None
+                case.verification_issues = list(dict.fromkeys([*(case.verification_issues or []), *date_issues]))
+                case.next_action = 'Obtain current documents and recheck validity before payment'
+                return 'Your application requires an updated document validity check before payment can be arranged. Please provide current supporting documents for review.'
         if (case.approval_source not in approval_policy.TRUSTED_APPROVALS
                 or (case.approval_source == approval_policy.DOCUMENT_CHECKS and (
                     case.verification_issues or

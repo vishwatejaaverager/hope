@@ -128,7 +128,7 @@ def test_ai_reply_does_not_receive_status_template(monkeypatch):
     monkeypatch.delenv('DISABLE_OPENROUTER_IN_TESTS')
     monkeypatch.setattr(ai_service, 'get_openrouter_api_key', lambda: 'test-key')
     response = Mock(ok=True)
-    response.json.return_value = {'choices': [{'message': {'content': '{"document_checks":[],"verification_issues":[],"auto_reply_body":"Hi Sara, thank you for the updated hospital bill. Please send your government ID so we can continue the review."}'}}]}
+    response.json.return_value = {'choices': [{'message': {'content': '{"document_checks":[],"red_flags":[],"review_complete":false,"review_decision":"request_information","decision_explanation":"Additional evidence is needed.","auto_reply_body":"Hi Sara, thank you for the updated hospital bill. Please send your government ID so we can continue the review."}'}}]}
     monkeypatch.setattr(ai_service.requests, 'post', Mock(return_value=response))
     result = ai_service.analyze_incoming_email('sara@example.com', 'Updated bill', 'Here is the bill.')
     assert result['auto_reply_body'].startswith('Hi Sara, thank you')
@@ -198,7 +198,7 @@ def document_fixture():
         attachments.append({'filename': f'{kind}.txt', 'content_type': 'text/plain', 'extracted_text': quote})
         checks.append({'document_type': kind, 'attachment_index': index, 'verdict': 'verified',
                        'patient_name': 'Ramesh Kumar', 'issuer': 'Test issuing authority',
-                       'document_date': '2026-11-01', 'evidence_text': quote, **details})
+                       'document_date': '2026-11-01', 'valid_until': None, 'validity_days': None, 'evidence_text': quote, **details})
     return attachments, checks
 
 
@@ -383,7 +383,7 @@ def test_successful_fallback_model_does_not_send_failure_notice(monkeypatch):
     monkeypatch.setattr(ai_service, 'get_openrouter_api_key', lambda: 'test-key')
     failed = Mock(ok=False, status_code=503, text='Unavailable')
     success = Mock(ok=True)
-    success.json.return_value = {'choices': [{'message': {'content': '{"document_checks":[],"verification_issues":[],"auto_reply_body":"Thank you for submitting your documents."}'}}]}
+    success.json.return_value = {'choices': [{'message': {'content': '{"document_checks":[],"red_flags":[],"review_complete":false,"review_decision":"request_information","decision_explanation":"Additional evidence is needed.","auto_reply_body":"Thank you for submitting your documents."}'}}]}
     post = Mock(side_effect=[failed, success])
     monkeypatch.setattr(ai_service.requests, 'post', post)
     result = ai_service.analyze_incoming_email('test@example.com', 'Application', 'Review please.')
@@ -478,3 +478,39 @@ def test_missing_document_notice_clears_when_remaining_files_arrive():
         'document_checks': checks[1:]}, 'test@example.com', None, '', attachments[1:],
         existing_evidence=first['verification_evidence'], existing_issues=first['verification_issues'])
     assert second['status'] == 'approved'
+
+
+def test_apollo_expired_estimate_cannot_be_approved_even_if_ai_says_verified():
+    from app.services.approval_policy import constrain_email_analysis
+    attachments, checks = document_fixture()
+    checks[1].update(document_date='2026-01-15', valid_until='2026-02-15', validity_days=30)
+    result = constrain_email_analysis({'patient_name': 'Ramesh Kumar', 'requested_amount': 125,
+        'status': 'approved', 'is_100_percent_verified': True, 'document_checks': checks},
+        'test@example.com', None, '', attachments)
+    assert result['status'] == 'under_review'
+    assert any('is expired' in issue for issue in result['verification_issues'])
+    assert any('conflicting expiry' in issue for issue in result['verification_issues'])
+
+
+def test_omitted_validity_fields_are_not_treated_as_no_expiry():
+    from app.services.approval_policy import constrain_email_analysis
+    attachments, checks = document_fixture()
+    checks[1].pop('valid_until')
+    checks[1].pop('validity_days')
+    result = constrain_email_analysis({'patient_name': 'Ramesh Kumar', 'requested_amount': 125,
+        'document_checks': checks}, 'test@example.com', None, '', attachments)
+    assert result['status'] == 'under_review'
+    assert any('has not been checked' in issue for issue in result['verification_issues'])
+
+
+def test_payout_rechecks_automated_approval_validity(db_session):
+    case = make_case(db_session, paypal_email='payee@example.com')
+    case.approval_source = 'document_checks'
+    _, checks = document_fixture()
+    case.verification_evidence = [{**check, 'validity_reviewed': True} for check in checks]
+    case.verification_evidence[1].update(document_date='2026-01-15', valid_until='2026-02-15', validity_days=30)
+    message = case_workflow.process_approved_case(db_session, case)
+    assert case.status == 'under_review'
+    assert case.approval_source is None
+    assert 'validity check' in message
+    assert not db_session.execute(select(Payout)).scalars().all()
