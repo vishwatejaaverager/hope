@@ -287,14 +287,16 @@ def analyze_incoming_email(
     ]
 
     if attachment_metadata:
+        requested = (existing_case_context or {}).get('requested_amount') or explicit_assistance_amount(body_plain)
         checks, model = _review_documents(attachment_metadata, body_plain, existing_case_context,
                                           models_to_try, api_key, inspect_request)
         if not checks:
             return _analysis_failure(sender, subject, 'all_models_failed')
         return {**fallback, 'document_checks': checks, 'red_flags': [],
                 'review_complete': len(checks) == len(attachment_metadata) and all(item['is_verified'] for item in checks),
-                'review_decision': 'further_review',
-                'decision_explanation': 'Document verdicts recorded; case eligibility still requires review.',
+                'requested_amount': requested,
+                'review_decision': 'approve' if requested else 'further_review',
+                'decision_explanation': 'The backend requires all three verified documents, no open findings, and an explicit assistance amount.',
                 'model_used': model, 'analysis_status': 'completed', 'draft_required': True}
 
     attachments_desc = json.dumps([
@@ -549,3 +551,19 @@ def _review_documents(attachments, body, case_context, models, key, inspect_requ
             except (requests.RequestException, ValueError, KeyError, IndexError, TypeError):
                 continue
     return checks, model_used
+
+
+
+def explicit_assistance_amount(body: str | None) -> str | None:
+    fresh = re.split(r"(?m)^On .+wrote:|^-----Original Message-----", body or '')[0]
+    fresh = '\n'.join(line for line in fresh.splitlines() if not line.lstrip().startswith('>'))
+    matches = re.findall(
+        r"\b(?:request(?:ing|ed)?|need(?:ed)?|assistance amount(?: requested)?)\s*(?:for\s+|of\s+|:\s*)?(?:USD\s*|\$\s*)([0-9]+(?:,[0-9]{3})*(?:\.[0-9]{1,2})?)(?![\d,]|\.\d)",
+        fresh, re.I,
+    )
+    amounts = {to_decimal_or_none(value) for value in matches}
+    if len(amounts) == 1:
+        amount = amounts.pop()
+        if amount is not None and amount.is_finite() and 0 < amount < Decimal('10000000000'):
+            return str(amount)
+    return None

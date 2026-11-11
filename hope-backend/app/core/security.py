@@ -24,15 +24,12 @@ def verify_webhook_secret(provided_secret: Optional[str]) -> bool:
     if cleaned.lower().startswith("bearer "):
         cleaned = cleaned[7:].strip()
 
-    valid_secrets = set()
-    configured = os.getenv("EMAIL_WEBHOOK_SECRET")
+    configured = (os.getenv("EMAIL_WEBHOOK_SECRET") or "").strip()
     if configured:
-        valid_secrets.add(configured.strip())
-    # Accept configured Zapier secret and dev fallback
-    valid_secrets.add("hope@0926")
-    valid_secrets.add("hope-email-webhook-secret-dev")
-
-    return any(hmac.compare_digest(cleaned, s) for s in valid_secrets)
+        return hmac.compare_digest(cleaned, configured)
+    if os.getenv("RENDER"):
+        return False
+    return hmac.compare_digest(cleaned, "hope-email-webhook-secret-dev")
 
 
 def authenticate_request(

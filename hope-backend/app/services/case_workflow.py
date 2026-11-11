@@ -30,7 +30,18 @@ def extract_paypal_email(body: str | None, awaiting_email: bool = False) -> str 
     return None
 
 
-def process_approved_case(db: Session, case: Case) -> str | None:
+
+def payment_only_address(body: str | None) -> str | None:
+    """Recognize a reply containing only the requested payment address."""
+    text = re.split(r"(?m)^On .+wrote:|^-----Original Message-----|^--\s*$", body or '')[0]
+    text = '\n'.join(line for line in text.splitlines() if not line.lstrip().startswith('>')).strip()
+    match = re.fullmatch(
+        rf"(?:(?:my |the beneficiary’s |the beneficiary's )?paypal(?: account)?(?: e-?mail(?: address)?)?\s*(?::|is|=)\s*)?<?({EMAIL_RE})>?[.]?",
+        text, re.I,
+    )
+    return match.group(1) if match else None
+
+def process_approved_case(db: Session, case: Case, *, notify_on_success: bool = False) -> str | None:
     """Return factual payment instructions; persist intent before contacting PayPal.
 
     A unique case linkage and stable PayPal request ID make webhook/admin retries
@@ -116,10 +127,20 @@ def process_approved_case(db: Session, case: Case) -> str | None:
         db.commit()
         return 'Your case is approved, but we could not confirm the payout status with PayPal. Our team will check it before confirming payment; you do not need to resubmit your documents.'
 
+    success_email = None
     if payout.item_status == 'SUCCESS':
         case.status = 'disbursed'
         case.next_action = 'Payout confirmed successful by PayPal'
-        message = f'PayPal has confirmed your payment of ${payout.amount:.2f} USD to {payout.recipient_email}. Reference: {payout.paypal_batch_id}.'
+        message = (
+            f'PayPal has confirmed your payment of ${payout.amount:.2f} {payout.currency} to {payout.recipient_email}.\n'
+            f'Case: {case.case_number}\nStatus: SUCCESS\nPayPal batch ID: {payout.paypal_batch_id}'
+        )
+        if payout.paypal_transaction_id:
+            message += f'\nPayPal transaction ID: {payout.paypal_transaction_id}'
+        if payout.paypal_item_id:
+            message += f'\nPayPal payout item ID: {payout.paypal_item_id}'
+        if notify_on_success and case.patient_email:
+            success_email = _queue_case_contact(db, case, message)
     elif payout.item_status in {'FAILED', 'RETURNED', 'BLOCKED', 'REFUNDED', 'REVERSED', 'UNCLAIMED'} or payout.batch_status in {'DENIED', 'CANCELED'}:
         case.status = 'payout_processing'
         case.next_action = f'Review unsuccessful PayPal payout: {payout.item_status or payout.batch_status}'
@@ -129,18 +150,23 @@ def process_approved_case(db: Session, case: Case) -> str | None:
         case.next_action = f'Check PayPal payout status: {payout.item_status or payout.batch_status}'
         message = f'Your approved assistance of ${payout.amount:.2f} USD has been submitted to PayPal for {payout.recipient_email}. Its current status is {payout.item_status or payout.batch_status}; payment completion is not yet confirmed. Reference: {payout.paypal_batch_id}.'
     db.commit()
+    if success_email is not None:
+        _dispatch_case_contact(db, success_email)
     return message
 
 
 def notify_case_contact(db: Session, case: Case, message: str) -> None:
     """Persist approval updates, then use the configured email transport."""
-    import os
-    import requests
-    from app.models import OutgoingEmail
-    from app.services import smtp_service
-
     if not case.patient_email:
         return
+    email = _queue_case_contact(db, case, message)
+    db.commit()
+    _dispatch_case_contact(db, email)
+
+
+def _queue_case_contact(db, case, message):
+    from app.models import OutgoingEmail
+
     email = OutgoingEmail(
         case_id=case.id, application_id=case.case_number,
         recipient_email=case.patient_email,
@@ -149,7 +175,14 @@ def notify_case_contact(db: Session, case: Case, message: str) -> None:
         status='pending',
     )
     db.add(email)
-    db.commit()
+    return email
+
+
+def _dispatch_case_contact(db, email):
+    import os
+    import requests
+    from app.services import smtp_service
+
     if smtp_service.send_threaded_email(email.recipient_email, email.subject, email.body_plain):
         email.status = 'sent'
         db.commit()

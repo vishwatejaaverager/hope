@@ -376,6 +376,12 @@ def receive_incoming_email(
         db.add(matched_case)
         db.flush()
 
+    def confirmed_payment_reply(case):
+        return (not serialized_attachments and case is not None and case.status == 'approved'
+                and case.next_action == 'Request beneficiary PayPal email'
+                and ai_service._extract_email_address(payload.sender).lower() == (case.patient_email or '').lower()
+                and case_workflow.payment_only_address(payload.body_plain))
+
     # Register one document per attachment before analysis. The same email and
     # document IDs are retained when the review result is saved below.
     prepared_email = existing if resume_from_mailbox else IncomingEmail(
@@ -384,7 +390,7 @@ def receive_incoming_email(
         received_at=received_timestamp, attachment_metadata=serialized_attachments,
         attachment_count=len(serialized_attachments), raw_payload={'intake_status': 'review_pending'})
     prepared_email.case_id = matched_case.id if matched_case else None
-    if matched_case and matched_case.status == 'approved' and matched_case.approval_source in {approval_policy.DOCUMENT_CHECKS, 'ai_red_flag_review'}:
+    if matched_case and matched_case.status == 'approved' and matched_case.approval_source in {approval_policy.DOCUMENT_CHECKS, 'ai_red_flag_review'} and not confirmed_payment_reply(matched_case):
         matched_case.status = 'under_review'
         matched_case.approval_source = None
         matched_case.next_action = 'Review the latest email and evidence before payment'
@@ -414,7 +420,7 @@ def receive_incoming_email(
     if matched_case:
         matched_case = db.execute(select(Case).where(Case.id == matched_case.id)
                                   .with_for_update().execution_options(populate_existing=True)).scalar_one()
-        if matched_case.status == 'approved' and matched_case.approval_source in {approval_policy.DOCUMENT_CHECKS, 'ai_red_flag_review'}:
+        if matched_case.status == 'approved' and matched_case.approval_source in {approval_policy.DOCUMENT_CHECKS, 'ai_red_flag_review'} and not confirmed_payment_reply(matched_case):
             matched_case.status = 'under_review'
             matched_case.approval_source = None
             matched_case.next_action = 'Review the latest email and evidence before payment'
@@ -441,7 +447,11 @@ def receive_incoming_email(
 
     # 7. Run AI triage & living summary analysis (via OpenRouter with safe fallback)
     ai_result = payload.ai_summary
-    if not ai_result:
+    payment_address = confirmed_payment_reply(matched_case) if payload.ai_summary is None else None
+    if payment_address:
+        matched_case.paypal_email = payment_address
+        ai_result = {'auto_reply_body': 'Thank you for confirming the beneficiary’s PayPal email.'}
+    elif not ai_result:
         ai_result = ai_service.analyze_incoming_email(
             sender=payload.sender,
             subject=payload.subject,
@@ -451,7 +461,7 @@ def receive_incoming_email(
         )
 
     analysis_failed = isinstance(ai_result, dict) and ai_result.get('analysis_status') == 'failed'
-    if isinstance(ai_result, dict) and not analysis_failed:
+    if isinstance(ai_result, dict) and not analysis_failed and not payment_address:
         if matched_case and matched_case.requested_amount is not None:
             ai_result['requested_amount'] = str(matched_case.requested_amount)
         ai_result = approval_policy.constrain_email_analysis(
@@ -483,7 +493,7 @@ def receive_incoming_email(
             ai_result['next_action'] = 'Review previous unsupported approval before authorizing payment'
 
     # 8. Create or update the linked Case record with AI living summary
-    if isinstance(ai_result, dict):
+    if isinstance(ai_result, dict) and not payment_address:
         est_cost = ai_service.to_decimal_or_none(ai_result.get("estimated_cost"))
         req_amt = ai_service.to_decimal_or_none(ai_result.get("requested_amount"))
         if not analysis_failed:
@@ -552,7 +562,7 @@ def receive_incoming_email(
     email_record = prepared_email
     for field, value in email_values.items():
         setattr(email_record, field, value)
-    if matched_case and isinstance(ai_result, dict):
+    if matched_case and isinstance(ai_result, dict) and not payment_address:
         snapshot = document_review_store.save_review(db, matched_case, email_record, document_records, ai_result)
         if (snapshot is not None and payload.ai_summary is None and ai_result.get('draft_required')
                 and matched_case.status not in {'closed', 'rejected'}):

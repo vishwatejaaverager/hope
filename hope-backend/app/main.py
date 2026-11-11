@@ -51,9 +51,10 @@ def _start_background_services() -> None:
 
         upgrade_database(engine)
 
-    from app.services import imap_service
+    from app.services import imap_service, payout_reconciliation
 
     imap_service.start_poller()
+    payout_reconciliation.start_poller()
 
 
 @app.get("/")

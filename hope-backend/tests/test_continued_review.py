@@ -331,3 +331,60 @@ def test_compact_attachment_verdicts_drive_separate_email_calls(client, db_sessi
     assert first.json()['case_id'] == second.json()['case_id']
     assert len(requests_seen) == 4
     assert second.json()['auto_reply_body'] == 'Your document was verified successfully.'
+
+
+def test_verified_documents_request_paypal_and_confirm_payout(client, db_session, monkeypatch):
+    import json
+    from app.services import paypal_service, payout_reconciliation
+    from app.models import OutgoingEmail
+
+    monkeypatch.delenv('DISABLE_OPENROUTER_IN_TESTS')
+    monkeypatch.setattr(ai_service, 'get_openrouter_api_key', lambda: 'test-key')
+    kinds = iter(case_review.REQUIRED_DOCUMENTS)
+
+    def provider(url, **kwargs):
+        if url != ai_service.OPENROUTER_URL:
+            return Mock(ok=True, status_code=200)
+        messages = kwargs['json']['messages']
+        if messages[0]['content'] == ai_service.DOCUMENT_VERIFICATION_PROMPT:
+            body = json.dumps({'doc_type': next(kinds), 'is_verified': True, 'red_flags': ''})
+        else:
+            body = 'Your supporting documents were reviewed.'
+        return Mock(ok=True, **{'json.return_value': {'choices': [{'message': {'content': body}}]}})
+
+    monkeypatch.setattr(ai_service.requests, 'post', provider)
+    submitted = submit(client, '<all-docs@example.com>', attachments(),
+                       body_plain='The estimate is $18,000. We are requesting $12,000 in assistance.')
+    assert submitted.status_code == 201
+    assert 'beneficiary’s PayPal account' in submitted.json()['auto_reply_body']
+    assert not db_session.execute(select(Payout)).scalars().all()
+
+    batch = {'batch_header': {'payout_batch_id': 'BATCH-1', 'batch_status': 'SUCCESS'}}
+    create = Mock(return_value=batch)
+    get = Mock(side_effect=[
+        {**batch, 'items': [{'transaction_status': 'PENDING', 'payout_item_id': 'ITEM-1'}]},
+        {**batch, 'items': [{'transaction_status': 'SUCCESS', 'payout_item_id': 'ITEM-1',
+                            'transaction_id': 'TXN-1'}]},
+    ])
+    monkeypatch.setattr(paypal_service, 'create_payout', create)
+    monkeypatch.setattr(paypal_service, 'get_payout', get)
+    reply = submit(client, '<paypal-reply@example.com>', [], references='<all-docs@example.com>',
+                   body_plain='beneficiary@example.com')
+    assert reply.status_code == 201
+    assert 'payment completion is not yet confirmed' in reply.json()['auto_reply_body']
+    assert create.call_args.args[:2] == ('beneficiary@example.com', '12000.00')
+    payout_reconciliation.reconcile_pending(db_session)
+    payout_reconciliation.reconcile_pending(db_session)
+    create.assert_called_once()
+    assert get.call_count == 2
+    case = db_session.execute(select(Case)).scalar_one()
+    assert case.status == 'disbursed'
+    receipts = [email.body_plain for email in db_session.execute(select(OutgoingEmail)).scalars()
+                if 'PayPal transaction ID: TXN-1' in email.body_plain]
+    assert len(receipts) == 1
+    assert all(value in receipts[0] for value in ('12000.00 USD', 'beneficiary@example.com', 'BATCH-1', 'ITEM-1'))
+
+
+def test_estimate_is_not_an_explicit_assistance_request():
+    assert ai_service.explicit_assistance_amount('The hospital estimate is $18,000.') is None
+    assert ai_service.explicit_assistance_amount('The estimate is $18,000. We are requesting $12,000.') == '12000.00'

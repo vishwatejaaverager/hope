@@ -214,3 +214,14 @@ suspends automatic approval without deleting prior document findings.
 The authenticated case-detail API returns `documents` and chronological
 `reviews`. Incoming-email lists expose each email's `review_report`. The admin
 dashboard shows current open/resolved concerns and each email's review findings.
+
+When all three required documents pass, no review concerns remain, and a USD
+assistance amount is recorded, Hope asks the case contact for the beneficiary's
+PayPal email. Reply in the same thread with just the address or
+`PayPal email: beneficiary@example.com`. The hospital estimate alone does not
+set the assistance amount. A payout is submitted at most once per case.
+Pending PayPal batches are checked periodically when PayPal credentials are
+configured. On confirmed success, Hope emails the amount, recipient, and
+available PayPal batch, item, and transaction IDs. No success email is sent for
+an unconfirmed payment. Render requires a configured `EMAIL_WEBHOOK_SECRET`
+matching the inbound integration.
