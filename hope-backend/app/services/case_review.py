@@ -14,7 +14,7 @@ REQUIRED_DOCUMENTS = {
 
 def document_verified(item):
     return (item.get('status') == 'approved' and item.get('readable') is True
-            and bool(str(item.get('evidence_text') or '').strip())
+            and (item.get('review_format') == 'document_verdict' or bool(str(item.get('evidence_text') or '').strip()))
             and bool(str(item.get('reason') or '').strip()) and item.get('red_flags') == [])
 
 
@@ -76,7 +76,7 @@ def evaluate(analysis: dict[str, Any], attachments: list[dict], previous_evidenc
         if type(index) is not int or not 0 <= index < len(attachments):
             complete = False
             continue
-        if check.get('readable') is not True or not str(check.get('evidence_text') or '').strip():
+        if check.get('readable') is not True or (check.get('review_format') != 'document_verdict' and not str(check.get('evidence_text') or '').strip()):
             complete = False
         covered.add(index)
         item = {**check, 'source_id': _source(attachments[index])}

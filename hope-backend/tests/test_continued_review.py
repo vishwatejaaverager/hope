@@ -286,3 +286,46 @@ def test_second_call_drafts_from_finalized_document_review(client, db_session, m
     assert response.status_code == 201
     drafting.assert_called_once()
     assert response.json()['auto_reply_body'] == db_session.execute(select(CaseReview)).scalar_one().reply_draft
+
+
+def test_compact_attachment_verdicts_drive_separate_email_calls(client, db_session, monkeypatch):
+    import json
+
+    monkeypatch.delenv('DISABLE_OPENROUTER_IN_TESTS')
+    monkeypatch.setattr(ai_service, 'get_openrouter_api_key', lambda: 'test-key')
+    reviewed = iter(('medical_record', 'cost_estimate'))
+    expected_current = []
+    requests_seen = []
+
+    def provider(url, **kwargs):
+        payload = kwargs['json']
+        if url != ai_service.OPENROUTER_URL:
+            return Mock(ok=True, status_code=200)
+        requests_seen.append(payload)
+        messages = payload['messages']
+        if messages[0]['content'] == ai_service.DOCUMENT_VERIFICATION_PROMPT:
+            kind = next(reviewed)
+            expected_current.append(kind)
+            assert any(part['type'] == 'image_url' for part in messages[1]['content'])
+            body = json.dumps({'doc_type': kind, 'is_verified': True, 'red_flags': ''})
+        else:
+            assert all(isinstance(message['content'], str) for message in messages)
+            context = json.loads(messages[1]['content'])
+            assert context['document_analysis'] == [
+                {'doc_type': expected_current[-1], 'is_verified': True, 'red_flags': []}]
+            assert set(context['outstanding_documents']) == {
+                label for kind, label in case_review.REQUIRED_DOCUMENTS.items() if kind not in expected_current}
+            assert {doc.document_type for doc in db_session.execute(select(CaseDocument)).scalars()
+                    if doc.status == 'verified'} == set(expected_current)
+            body = 'Your document was verified successfully.'
+        return Mock(ok=True, **{'json.return_value': {'choices': [{'message': {'content': body}}]}})
+
+    monkeypatch.setattr(ai_service.requests, 'post', provider)
+    first = submit(client, '<compact-first@example.com>', [attachments()[2]])
+    assert first.status_code == 201
+    second = submit(client, '<compact-followup@example.com>', [attachments()[1]],
+                    references='<compact-first@example.com>')
+    assert second.status_code == 201
+    assert first.json()['case_id'] == second.json()['case_id']
+    assert len(requests_seen) == 4
+    assert second.json()['auto_reply_body'] == 'Your document was verified successfully.'
