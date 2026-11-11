@@ -81,8 +81,10 @@ def save_review(db, case, email, documents, analysis):
             doc.extracted_data = item
             doc.status = 'verified' if document_verified(item) else 'needs_review'
             doc.reason = str(item.get('reason') or 'Document verification is incomplete.')
-    db.add(CaseReview(case_id=case.id, email_id=email.id, report=report,
-                      reply_draft=analysis.get('auto_reply_body')))
+    snapshot = CaseReview(case_id=case.id, email_id=email.id, report=report,
+                          reply_draft=analysis.get('auto_reply_body'))
+    db.add(snapshot)
+    return snapshot
 
 
 def serialize_document(doc):

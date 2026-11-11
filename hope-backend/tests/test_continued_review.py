@@ -263,3 +263,26 @@ def test_document_verdict_saved_and_flags_appear_in_reply(client, db_session, mo
     assert documents['cost_estimate'].extracted_data['flags'] == messages
     assert db_session.execute(select(Case)).scalar_one().status == 'under_review'
     assert not db_session.execute(select(Payout)).scalars().all()
+
+
+def test_second_call_drafts_from_finalized_document_review(client, db_session, monkeypatch):
+    value = report()
+    value['document_checks'] = [value['document_checks'][2]]
+    value['document_checks'][0].update(attachment_index=0, is_verified=True, flags=[])
+    value.update(draft_required=True, review_decision='request_information')
+    monkeypatch.setattr(ai_service, 'analyze_incoming_email', Mock(return_value=value))
+
+    def draft(final, case_number):
+        docs = final['review_report']['document_checks']
+        assert docs[0]['is_verified'] is True
+        statuses = final['review_report']['document_statuses']
+        assert {kind for kind, item in statuses.items() if item['status'] == 'missing'} == {'government_id', 'cost_estimate'}
+        assert db_session.execute(select(CaseDocument)).scalar_one().status == 'verified'
+        return 'Your medical report was verified successfully. Please send the estimate and ID.'
+
+    drafting = Mock(side_effect=draft)
+    monkeypatch.setattr(ai_service, 'draft_review_email', drafting)
+    response = submit(client, 'separate-email-draft', [attachments()[2]])
+    assert response.status_code == 201
+    drafting.assert_called_once()
+    assert response.json()['auto_reply_body'] == db_session.execute(select(CaseReview)).scalar_one().reply_draft
