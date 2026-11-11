@@ -136,7 +136,11 @@ with chat:
                 ],
             }
             with st.spinner("Drafting the email…"):
-                draft = draft_review_email({"review_report": report}, "LOCAL-TEST", inspect_request=inspect)
+                draft = draft_review_email(
+                    {"review_report": report}, "LOCAL-TEST",
+                    incoming_email={"subject": "Local email review", "body": turn.text},
+                    inspect_request=inspect,
+                )
             st.session_state.result = {"document_analysis": verdict, "review_report": report}
             st.session_state.turns.append(("assistant", draft))
             st.rerun()

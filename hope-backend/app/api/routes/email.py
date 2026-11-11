@@ -557,7 +557,10 @@ def receive_incoming_email(
         if (snapshot is not None and payload.ai_summary is None and ai_result.get('draft_required')
                 and matched_case.status not in {'closed', 'rejected'}):
             db.flush()  # Write the finalized document statuses before drafting.
-            ai_result['auto_reply_body'] = ai_service.draft_review_email(ai_result, matched_case.case_number)
+            ai_result['auto_reply_body'] = ai_service.draft_review_email(
+                ai_result, matched_case.case_number,
+                incoming_email={'subject': payload.subject, 'body': payload.body_plain},
+            )
             snapshot.reply_draft = ai_result['auto_reply_body']
 
     # 9b. Auto-generate & queue AI Reply email if payload did not explicitly disable auto-reply

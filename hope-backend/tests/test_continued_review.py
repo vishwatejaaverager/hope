@@ -272,7 +272,8 @@ def test_second_call_drafts_from_finalized_document_review(client, db_session, m
     value.update(draft_required=True, review_decision='request_information')
     monkeypatch.setattr(ai_service, 'analyze_incoming_email', Mock(return_value=value))
 
-    def draft(final, case_number):
+    def draft(final, case_number, *, incoming_email):
+        assert incoming_email["body"] == "Please review the updated evidence."
         docs = final['review_report']['document_checks']
         assert docs[0]['is_verified'] is True
         statuses = final['review_report']['document_statuses']
@@ -311,6 +312,7 @@ def test_compact_attachment_verdicts_drive_separate_email_calls(client, db_sessi
         else:
             assert all(isinstance(message['content'], str) for message in messages)
             context = json.loads(messages[1]['content'])
+            assert context['incoming_email']['body'] == 'Please review the updated evidence.'
             assert context['document_analysis'] == [
                 {'doc_type': expected_current[-1], 'is_verified': True, 'red_flags': []}]
             assert set(context['outstanding_documents']) == {

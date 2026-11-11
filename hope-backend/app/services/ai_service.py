@@ -423,6 +423,7 @@ def to_decimal_or_none(val: Any) -> Optional[Decimal]:
 
 
 def draft_review_email(analysis: dict[str, Any], case_number: str, *,
+                       incoming_email: dict[str, str | None],
                        inspect_request: Callable[[dict[str, Any]], None] | None = None) -> str:
     """Draft from finalized backend findings; no file data or URLs are supplied."""
     report = analysis['review_report']
@@ -438,7 +439,8 @@ def draft_review_email(analysis: dict[str, Any], case_number: str, *,
     concerns.extend(flag for item in (analysis.get('verification_evidence') or [])
                     if item.get('is_verified') is not True for flag in item.get('flags', [])
                     if flag not in concerns and not any(flag in doc['red_flags'] for doc in documents))
-    context = {'case_number': case_number, 'document_analysis': documents,
+    context = {'case_number': case_number, 'incoming_email': incoming_email,
+               'document_analysis': documents,
                'outstanding_documents': outstanding, 'open_concerns': concerns}
     key = get_openrouter_api_key()
     if key and os.getenv('DISABLE_OPENROUTER_IN_TESTS') != '1':
@@ -446,7 +448,7 @@ def draft_review_email(analysis: dict[str, Any], case_number: str, *,
             payload = {'model': analysis.get('model_used') or DEFAULT_VISION_MODEL, 'max_tokens': 1000,
                       'messages': [
                           {'role': 'system', 'content': (
-                              'Draft a complete, natural applicant email using only the supplied final review data. '
+                              'Write a complete, natural reply to the incoming email, using the final document analysis and outstanding documents as the source of truth. Respond to the applicant’s message without changing document verdicts. '
                               'For each document marked true, say it was verified successfully (received and reviewed). '
                               'For false verdicts, explain the supplied red flags once and ask for clarification. '
                               'Request outstanding documents once. Never claim authenticity, case approval, or payment. '
