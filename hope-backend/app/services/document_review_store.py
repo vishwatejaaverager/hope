@@ -2,6 +2,7 @@
 from sqlalchemy import select
 from app.models import CaseDocument, CaseReview, IncomingEmail, OutgoingEmail
 from app.services.approval_policy import _source
+from app.services.case_review import document_verified
 from app.services.attachment_service import normalize
 
 
@@ -32,7 +33,7 @@ def backfill_case(db, case):
             if doc.status == 'pending' and old:
                 doc.document_type = str(old.get('document_type') or 'other')
                 doc.extracted_data = old
-                doc.status = 'approved' if old.get('status') == 'approved' else 'needs_review'
+                doc.status = 'verified' if document_verified(old) else 'needs_review'
                 doc.reason = old.get('reason')
         snapshot = (email.raw_payload or {}).get('review_report')
         if snapshot and not db.execute(select(CaseReview.id).where(CaseReview.email_id == email.id)).first():
@@ -78,7 +79,7 @@ def save_review(db, case, email, documents, analysis):
         if item:
             doc.document_type = str(item.get('document_type') or 'other')
             doc.extracted_data = item
-            doc.status = 'approved' if item.get('status') == 'approved' and item.get('red_flags') == [] and item.get('readable') is True and str(item.get('reason') or '').strip() and str(item.get('evidence_text') or '').strip() else 'needs_review'
+            doc.status = 'verified' if document_verified(item) else 'needs_review'
             doc.reason = str(item.get('reason') or 'Document verification is incomplete.')
     db.add(CaseReview(case_id=case.id, email_id=email.id, report=report,
                       reply_draft=analysis.get('auto_reply_body')))

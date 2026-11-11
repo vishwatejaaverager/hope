@@ -239,3 +239,25 @@ def test_pending_submission_prevents_new_payout(db_session):
     assert 'awaiting review' in case_workflow.process_approved_case(db_session, case)
     assert case.status == 'under_review'
     assert not db_session.execute(select(Payout)).scalars().all()
+
+
+def test_document_verdict_saved_and_flags_appear_in_reply(client, db_session, monkeypatch):
+    value = report()
+    messages = ['Line items total $20,000 but printed total is $18,000.',
+                'Printed dates span 31 days but stated validity is 30 days.']
+    for index, check in enumerate(value['document_checks']):
+        check.pop('status')
+        check.pop('red_flags')
+        check.update(is_verified=index != 1, flags=messages if index == 1 else [])
+    monkeypatch.setattr(ai_service, 'analyze_incoming_email', Mock(return_value=value))
+    response = submit(client, 'document-verdicts', attachments())
+    assert response.status_code == 201
+    reply = response.json()['auto_reply_body']
+    assert all(message in reply for message in messages)
+    documents = {doc.document_type: doc for doc in db_session.execute(select(CaseDocument)).scalars()}
+    assert documents['government_id'].status == 'verified'
+    assert documents['government_id'].extracted_data['is_verified'] is True
+    assert documents['cost_estimate'].status == 'needs_review'
+    assert documents['cost_estimate'].extracted_data['flags'] == messages
+    assert db_session.execute(select(Case)).scalar_one().status == 'under_review'
+    assert not db_session.execute(select(Payout)).scalars().all()

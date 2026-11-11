@@ -608,9 +608,9 @@ export function MedicalCasesPanel({
                 <div key={document.label} className="mt-3 border-t border-slate-100 pt-2 text-sm">
                   <div className="flex justify-between gap-3">
                     <span className="font-medium">{document.label}</span>
-                    <span className={document.status === 'approved' ? 'text-emerald-700' : 'text-amber-700'}>{document.status.replaceAll('_', ' ')}</span>
+                    <span className={document.status === 'approved' ? 'text-emerald-700' : 'text-amber-700'}>{document.status === 'approved' ? 'Verified' : document.status.replaceAll('_', ' ')}</span>
                   </div>
-                  <p className="mt-1 text-slate-600">{document.reason}</p>
+                  {document.status !== 'approved' && <p className="mt-1 text-slate-600">{document.reason}</p>}
                 </div>
               ))}
               <ReviewFindings report={selectedCase.reviewReport} />

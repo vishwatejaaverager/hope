@@ -12,15 +12,17 @@ REQUIRED_DOCUMENTS = {
 }
 
 
+def document_verified(item):
+    return (item.get('status') == 'approved' and item.get('readable') is True
+            and bool(str(item.get('evidence_text') or '').strip())
+            and bool(str(item.get('reason') or '').strip()) and item.get('red_flags') == [])
+
+
 def document_statuses(evidence: list[dict]) -> dict:
     statuses = {}
     for kind, label in REQUIRED_DOCUMENTS.items():
         items = [item for item in evidence if item.get('document_type') == kind]
-        approved = bool(items) and all(
-            item.get('status') == 'approved' and item.get('readable') is True
-            and str(item.get('evidence_text') or '').strip()
-            and str(item.get('reason') or '').strip() and item.get('red_flags') == []
-            for item in items)
+        approved = bool(items) and all(document_verified(item) for item in items)
         statuses[kind] = {
             'label': label, 'status': 'approved' if approved else ('needs_review' if items else 'missing'),
             'reason': '; '.join(str(item.get('reason') or 'Document verification is incomplete.') for item in items) if items else 'Document not received.',
@@ -78,6 +80,10 @@ def evaluate(analysis: dict[str, Any], attachments: list[dict], previous_evidenc
             complete = False
         covered.add(index)
         item = {**check, 'source_id': _source(attachments[index])}
+        if 'is_verified' in check or 'flags' in check:
+            supplied = check.get('flags')
+            item['red_flags'] = [flag.strip() for flag in supplied if isinstance(flag, str) and flag.strip()] if isinstance(supplied, list) else []
+            item['status'] = 'approved' if check.get('is_verified') is True and supplied == [] else 'needs_review'
         if not (attachments[index].get('extracted_text') or attachments[index].get('url') in supplied_images):
             complete = False
             item.update(readable=False, status='needs_review', reason='The review service could not access readable document content.',
@@ -125,6 +131,18 @@ def evaluate(analysis: dict[str, Any], attachments: list[dict], previous_evidenc
         complete = False
     if not evidence:
         complete = False
+    current_sources = {_source(attachment) for attachment in attachments}
+    current = [item for item in evidence if item['source_id'] in current_sources]
+    for item in evidence:
+        item['is_verified'] = document_verified(item)
+        item['flags'] = [] if item['is_verified'] else [
+            str(flag.get('message') or 'Review incomplete.') if isinstance(flag, dict) else str(flag)
+            for flag in (item.get('red_flags') or [item.get('reason') or 'Review incomplete.'])
+        ]
+    for item in evidence:
+        for message in item['flags']:
+            flags.append({'origin': 'computed', 'message': message,
+                          'required_action': 'Please clarify the issue or send a corrected document.'})
     statuses = document_statuses(evidence)
     for kind, item in statuses.items():
         if item['status'] != 'approved':
@@ -156,12 +174,24 @@ def evaluate(analysis: dict[str, Any], attachments: list[dict], previous_evidenc
                           'red_flags': flags, 'resolved_red_flags': resolved,
                           'reviewed_at': datetime.now(timezone.utc).isoformat(), 'explanation': explanation,
                           'model': result.get('model_used'),
-                          'document_checks': [item for item in evidence if item.get('source_id') in { _source(attachment) for attachment in attachments }],
+                          'document_checks': current,
                           'document_statuses': statuses},
     })
     # Do not send an approval draft if the returned decision/evidence disagrees.
     reply = str(result.get('auto_reply_body') or '')
-    if not approved and ('approved' in reply.lower() or not reply.strip()):
+    if any(isinstance(check, dict) and 'is_verified' in check for check in checks):
+        lines = ['Dear Applicant,', '', 'Thank you for sending your documents.']
+        for item in current:
+            label = REQUIRED_DOCUMENTS.get(item.get('document_type'), 'Supporting document')
+            lines.append(f'{label}: Verified.' if item['is_verified'] else f'{label}: Needs review.')
+            lines.extend(f'- {message}' for message in item['flags'])
+        shown = {message for item in current for message in item['flags']}
+        lines.extend(f"- {message}" for message in dict.fromkeys(flag['message'] for flag in flags)
+                     if message not in shown)
+        if not approved:
+            lines.extend(['', 'Please reply with clarification or the corrected or outstanding documents.'])
+        result['auto_reply_body'] = '\n'.join([*lines, '', 'Kind regards,', 'Hope Medical Assistance Team'])
+    elif not approved and ('approved' in reply.lower() or not reply.strip()):
         actions = '\n'.join('- ' + str(flag.get('required_action') or flag.get('message')) if isinstance(flag, dict) else '- ' + str(flag) for flag in flags)
         result['auto_reply_body'] = ('Dear Applicant,\n\nThank you for your submission. We need the following information before completing your application:\n\n'
                                      + actions + '\n\nPlease reply in this thread.\n\nKind regards,\nHope Medical Assistance Team')
