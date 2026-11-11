@@ -595,8 +595,8 @@ export function MedicalCasesPanel({
                   <span className="text-indigo-950">{selectedCase.nextAction}</span>
                 </div>
                 <div>
-                  <span className="font-semibold text-indigo-800">Pending Items: </span>
-                  <span className="text-indigo-950">{selectedCase.pendingItemsText}</span>
+                  <span className="font-semibold text-indigo-800">Other pending review actions: </span>
+                  <span className="text-indigo-950">{selectedCase.pendingReviewActionsText}</span>
                 </div>
               </div>
             </div>
@@ -613,6 +613,20 @@ export function MedicalCasesPanel({
                   {document.status !== 'approved' && <p className="mt-1 text-slate-600">{document.reason}</p>}
                 </div>
               ))}
+              <section aria-label="Outstanding documents" className="mt-4 border-t border-slate-200 pt-3">
+                <h4 className="text-sm font-semibold text-slate-900">Outstanding documents</h4>
+                {selectedCase.documentStatuses.length === 0 ? (
+                  <p className="mt-1 text-sm text-slate-500">No checklist recorded yet.</p>
+                ) : selectedCase.documentStatuses.every((document) => document.status === 'approved') ? (
+                  <p className="mt-1 text-sm text-slate-500">None.</p>
+                ) : (
+                  <ul className="mt-1 list-disc space-y-1 pl-5 text-sm text-slate-700">
+                    {selectedCase.documentStatuses.filter((document) => document.status !== 'approved').map((document) => (
+                      <li key={document.label}>{document.label}</li>
+                    ))}
+                  </ul>
+                )}
+              </section>
               <ReviewFindings report={selectedCase.reviewReport} />
               {selectedCase.reviewExplanation && <p className="mt-3 text-sm text-slate-700">{selectedCase.reviewExplanation}</p>}
             </div>

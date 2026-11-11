@@ -97,6 +97,7 @@ export interface CaseRow {
   overallSummary: string;
   nextAction: string;
   pendingItemsText: string;
+  pendingReviewActionsText: string;
   emailExchanges: Array<{ id: string; direction: string }>;
   incomingEmailCount: number;
   outgoingEmailCount: number;
@@ -302,6 +303,13 @@ function formatPendingItems(val: unknown): string {
 
 function mapCases(records: CaseRecord[]): CaseRow[] {
   return records.map((c) => {
+    const documentStatuses = Object.values(c.review_report?.document_statuses || {});
+    const checklistActions = new Set(documentStatuses
+      .filter((document) => document.status !== "approved")
+      .map((document) => `Provide or resolve verification of: ${document.label}.`));
+    const reviewActions = Array.isArray(c.pending_items)
+      ? c.pending_items.filter((action) => !checklistActions.has(String(action)))
+      : c.pending_items;
     const inc = Number(c.incoming_email_count) || 0;
     const out = Number(c.outgoing_email_count) || 0;
     const exchanges = Array.isArray(c.email_exchanges)
@@ -323,12 +331,13 @@ function mapCases(records: CaseRecord[]): CaseRow[] {
       currency: c.currency || "USD",
       urgency: (c.urgency || "medium").toUpperCase(),
       status: (c.status || "new").toUpperCase(),
-      documentStatuses: Object.values(c.review_report?.document_statuses || {}),
+      documentStatuses,
       reviewExplanation: c.review_report?.explanation || "",
       reviewReport: c.review_report || null,
       overallSummary: c.overall_summary || "No summary yet",
       nextAction: c.next_action || "—",
       pendingItemsText: formatPendingItems(c.pending_items),
+      pendingReviewActionsText: formatPendingItems(reviewActions),
       emailExchanges: exchanges,
       incomingEmailCount: inc,
       outgoingEmailCount: out,
