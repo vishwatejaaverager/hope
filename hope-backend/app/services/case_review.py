@@ -179,18 +179,20 @@ def evaluate(analysis: dict[str, Any], attachments: list[dict], previous_evidenc
     })
     # Do not send an approval draft if the returned decision/evidence disagrees.
     reply = str(result.get('auto_reply_body') or '')
-    if any(isinstance(check, dict) and 'is_verified' in check for check in checks):
-        lines = ['Dear Applicant,', '', 'Thank you for sending your documents.']
-        for item in current:
-            label = REQUIRED_DOCUMENTS.get(item.get('document_type'), 'Supporting document')
-            lines.append(f'{label}: Verified.' if item['is_verified'] else f'{label}: Needs review.')
-            lines.extend(f'- {message}' for message in item['flags'])
-        shown = {message for item in current for message in item['flags']}
-        lines.extend(f"- {message}" for message in dict.fromkeys(flag['message'] for flag in flags)
-                     if message not in shown)
-        if not approved:
-            lines.extend(['', 'Please reply with clarification or the corrected or outstanding documents.'])
-        result['auto_reply_body'] = '\n'.join([*lines, '', 'Kind regards,', 'Hope Medical Assistance Team'])
+    verdict_changed = any(
+        isinstance(check, dict) and check.get('is_verified') is True
+        and not any(item.get('attachment_index') == check.get('attachment_index')
+                    and item['is_verified'] for item in current)
+        for check in checks
+    )
+    if verdict_changed:
+        # A draft based on a superseded verdict could falsely confirm a document.
+        findings = list(dict.fromkeys(message for item in current for message in item['flags']))
+        result['auto_reply_body'] = (
+            'Dear Applicant,\n\nThank you for sending your documents. We need clarification before we can complete the review.\n\n'
+            + '\n'.join(f'- {message}' for message in findings)
+            + '\n\nPlease reply with clarification or a corrected document.\n\nKind regards,\nHope Medical Assistance Team'
+        )
     elif not approved and ('approved' in reply.lower() or not reply.strip()):
         actions = '\n'.join('- ' + str(flag.get('required_action') or flag.get('message')) if isinstance(flag, dict) else '- ' + str(flag) for flag in flags)
         result['auto_reply_body'] = ('Dear Applicant,\n\nThank you for your submission. We need the following information before completing your application:\n\n'

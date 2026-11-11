@@ -249,11 +249,13 @@ def test_document_verdict_saved_and_flags_appear_in_reply(client, db_session, mo
         check.pop('status')
         check.pop('red_flags')
         check.update(is_verified=index != 1, flags=messages if index == 1 else [])
+    value['review_decision'] = 'request_information'
+    value['auto_reply_body'] = 'Thanks for sending your estimate. ' + ' '.join(messages) + ' Could you send a corrected copy?'
     monkeypatch.setattr(ai_service, 'analyze_incoming_email', Mock(return_value=value))
     response = submit(client, 'document-verdicts', attachments())
     assert response.status_code == 201
     reply = response.json()['auto_reply_body']
-    assert all(message in reply for message in messages)
+    assert reply == value['auto_reply_body']
     documents = {doc.document_type: doc for doc in db_session.execute(select(CaseDocument)).scalars()}
     assert documents['government_id'].status == 'verified'
     assert documents['government_id'].extracted_data['is_verified'] is True
