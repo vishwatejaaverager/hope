@@ -447,7 +447,7 @@ def receive_incoming_email(
         if matched_case and matched_case.requested_amount is not None:
             ai_result['requested_amount'] = str(matched_case.requested_amount)
         ai_result = approval_policy.constrain_email_analysis(
-            ai_result, payload.sender, payload.subject, payload.body_plain, serialized_attachments,
+            ai_result, payload.sender, payload.subject, ai_service.latest_email_body(payload.body_plain), serialized_attachments,
             existing_evidence=matched_case.verification_evidence if matched_case else None,
             existing_issues=matched_case.verification_issues if matched_case else None,
             existing_report=matched_case.review_report if matched_case else None,

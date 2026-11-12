@@ -253,6 +253,21 @@ def _analysis_failure(sender: str, subject: Optional[str], reason: str) -> dict[
     }
 
 
+def latest_email_body(body: str | None) -> str | None:
+    """Remove common quoted replies from model input without altering the stored email."""
+    if body is None:
+        return None
+    body = body.replace("\r\n", "\n")
+    reply_marker = re.search(
+        r"(?im)^\s*(?:On [^\n]*(?:\n[^\n]{1,200})? wrote:\s*$|"
+        r"-{2,}\s*(?:Original Message|Forwarded message)\s*-{2,}\s*$|"
+        r"From:[^\n]*\n(?:Sent|Date):[^\n]*$)", body
+    )
+    if reply_marker:
+        body = body[:reply_marker.start()]
+    return "\n".join(line for line in body.splitlines() if not line.lstrip().startswith(">")).strip()
+
+
 def analyze_incoming_email(
     sender: str,
     subject: Optional[str],
@@ -264,6 +279,7 @@ def analyze_incoming_email(
     document_prompt: str | None = None,
 ) -> dict[str, Any]:
     """Analyze an incoming email + attachment images/docs using OpenRouter free Vision models."""
+    body_plain = latest_email_body(body_plain)
     fallback = _heuristic_fallback_analysis(
         sender=sender,
         subject=subject,
@@ -306,7 +322,10 @@ def analyze_incoming_email(
          for key, value in item.items()} if isinstance(item, dict) else item
         for item in attachment_metadata or []
     ], default=str)
-    case_desc = json.dumps(existing_case_context or {}, default=str)
+    case_desc = json.dumps({
+        key: value for key, value in (existing_case_context or {}).items()
+        if key not in {'recent_messages', 'documents', 'overall_summary'}
+    }, default=str)
     image_urls = _extract_image_urls(attachment_metadata)
 
     system_prompt = """Review the submitted documents and saved case context. Look for any red flag, including unreadable or missing information, inconsistent names or dates, outdated records, incorrect totals, and conflicts with other evidence. For each issue, cite the actual evidence, explain the discrepancy and why it matters, and say what would resolve it. Distinguish what the document shows from what the applicant says. If something is missing or unreadable, say so instead of guessing.
@@ -438,7 +457,7 @@ def draft_review_email(analysis: dict[str, Any], case_number: str, *,
     } for item in report['document_checks']]
     outstanding = [item['label'] for item in report['document_statuses'].values()
                    if item['status'] != 'approved']
-    context = {'case_number': case_number, 'incoming_email': incoming_email,
+    context = {'case_number': case_number, 'incoming_email': {**incoming_email, 'body': latest_email_body(incoming_email.get('body'))},
                'document_analysis': documents,
                'outstanding_documents': outstanding}
     key = get_openrouter_api_key()
@@ -509,8 +528,10 @@ def _review_documents(attachments, body, case_context, models, key, inspect_requ
     model_used = None
     prior = case_context or {}
     facts = {'patient_name': prior.get('patient_name'), 'hospital_name': prior.get('hospital_name'),
-             'prior_findings': [{k: item.get(k) for k in ('document_type', 'is_verified', 'flags', 'facts')}
-                                for item in (prior.get('verification_evidence') or []) if isinstance(item, dict)]}
+             'document_statuses': {
+                 kind: item.get('status') for kind, item in
+                 ((prior.get('review_report') or {}).get('document_statuses') or {}).items()
+             }}
     image_urls = set(_extract_image_urls(attachments)[:4])
     for index, attachment in enumerate(attachments):
         image = attachment.get('url')

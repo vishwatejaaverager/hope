@@ -421,3 +421,29 @@ def test_drafting_excludes_saved_findings_but_keeps_current_flags_and_checklist(
                                'red_flags': ['The printed total differs from the itemized charges.']}],
         'outstanding_documents': ['Patient ID', 'Hospital estimate'],
     }
+
+
+def test_quoted_history_stays_in_dashboard_but_not_model_requests(client, db_session, monkeypatch):
+    import json
+
+    monkeypatch.delenv('DISABLE_OPENROUTER_IN_TESTS')
+    monkeypatch.setattr(ai_service, 'get_openrouter_api_key', lambda: 'test-key')
+    original = 'Here is my updated medical report.\n\nOn Thursday, Hope wrote:\n> Earlier private finding.'
+    seen = []
+
+    def provider(url, **kwargs):
+        if url != ai_service.OPENROUTER_URL:
+            return Mock(ok=True, status_code=200)
+        messages = kwargs['json']['messages']
+        seen.append(messages)
+        assert 'Earlier private finding' not in json.dumps(messages)
+        assert 'Here is my updated medical report.' in json.dumps(messages)
+        content = ('{"doc_type":"medical_record","is_verified":true,"red_flags":""}'
+                   if len(seen) == 1 else 'Thank you for the updated report.')
+        return Mock(ok=True, **{'json.return_value': {'choices': [{'message': {'content': content}}]}})
+
+    monkeypatch.setattr(ai_service.requests, 'post', provider)
+    response = submit(client, 'quoted-history-example', [attachments()[2]], body_plain=original)
+    assert response.status_code == 201
+    assert len(seen) == 2
+    assert db_session.execute(select(IncomingEmail)).scalar_one().body_plain == original
