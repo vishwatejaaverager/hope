@@ -92,3 +92,39 @@ def serialize_document(doc):
             'filename': doc.filename, 'document_type': doc.document_type, 'status': doc.status,
             'is_current': doc.is_current, 'reason': doc.reason, 'data': doc.extracted_data,
             'file': doc.file_metadata}
+
+
+def case_context(db, case, current_email_id=None):
+    return {
+        **context(db, case, current_email_id),
+        "case_number": case.case_number,
+        "patient_name": case.patient_name,
+        "patient_email": case.patient_email,
+        "paypal_email": case.paypal_email,
+        "verification_evidence": case.verification_evidence,
+        "verification_issues": case.verification_issues,
+        "review_report": case.review_report,
+        "medical_category": case.medical_category,
+        "hospital_name": case.hospital_name,
+        "estimated_cost": str(case.estimated_cost) if case.estimated_cost else None,
+        "requested_amount": str(case.requested_amount) if case.requested_amount else None,
+        "urgency": case.urgency,
+        "status": case.status,
+        "overall_summary": case.overall_summary,
+        "next_action": case.next_action,
+        "pending_items": case.pending_items,
+    }
+
+def load_case_preview(case_number):
+    """Load an existing case for local testing without updating its records."""
+    from sqlalchemy import func, text
+    from app.db import SessionLocal
+    from app.models import Case
+
+    with SessionLocal() as db:
+        if db.get_bind().dialect.name == 'postgresql':
+            db.execute(text('SET TRANSACTION READ ONLY'))
+        case = db.execute(select(Case).where(
+            func.lower(Case.case_number) == case_number.strip().lower()
+        )).scalar_one_or_none()
+        return case_context(db, case) if case is not None else None

@@ -15,13 +15,32 @@ from app.services.approval_policy import constrain_email_analysis
 
 st.set_page_config(page_title="Hope review tester", layout="wide")
 st.title("Hope review tester")
-st.caption("Local session · No email, database writes, or payouts")
+st.caption("Email preview · Optional read-only case connection · No email or payouts")
 def reset_case():
     for key in ("turns", "case", "requests", "result", "email_case"):
         st.session_state.pop(key, None)
 
 mode = st.sidebar.radio("Test mode", ["Custom prompt", "Email flow"], on_change=reset_case)
 st.sidebar.button("Reset case", on_click=reset_case)
+
+if mode == "Email flow":
+    case_number = st.sidebar.text_input("Existing case number", placeholder="CASE-2026-…")
+    if st.sidebar.button("Load saved case", disabled=not case_number.strip()):
+        from app.services.document_review_store import load_case_preview
+        try:
+            loaded = load_case_preview(case_number)
+        except Exception:
+            st.sidebar.error("Could not read the case database. Check the backend database configuration.")
+        else:
+            if loaded is None:
+                st.sidebar.warning("Case not found.")
+            else:
+                reset_case()
+                st.session_state.email_case = loaded
+    loaded_number = st.session_state.get("email_case", {}).get("case_number")
+    if loaded_number:
+        st.sidebar.caption(f"Previewing {loaded_number} from PostgreSQL. Test replies stay local.")
+
 
 for key, default in (("turns", []), ("case", []), ("requests", []), ("result", None)):
     if key not in st.session_state:
@@ -81,7 +100,8 @@ with chat:
 
         if mode == "Email flow":
             case = st.session_state.get("email_case", {})
-            sender, subject = "test@example.invalid", "Local email review"
+            sender = case.get("patient_email") or "test@example.invalid"
+            subject = f"Re: {case['case_number']}" if case.get("case_number") else "Local email review"
             with st.spinner("Reviewing documents and drafting the reply…"):
                 result = analyze_incoming_email(sender, subject, turn.text, attachments, case,
                                                 document_prompt=prompt, inspect_request=inspect)
@@ -94,12 +114,12 @@ with chat:
                         existing_issues=case.get("verification_issues"),
                         existing_report=case.get("review_report"),
                     )
-                    st.session_state.email_case = {key: result.get(key) for key in (
+                    st.session_state.email_case = {**case, **{key: result.get(key, case.get(key)) for key in (
                         "patient_name", "hospital_name", "requested_amount", "verification_evidence",
                         "verification_issues", "review_report", "overall_summary", "status",
-                    )}
+                    )}}
                     result["auto_reply_body"] = draft_review_email(
-                        result, "LOCAL-TEST", incoming_email={"subject": subject, "body": turn.text},
+                        result, case.get("case_number") or "LOCAL-TEST", incoming_email={"subject": subject, "body": turn.text},
                         inspect_request=inspect,
                     )
             st.session_state.result = result

@@ -425,25 +425,7 @@ def receive_incoming_email(
             matched_case.approval_source = None
             matched_case.next_action = 'Review the latest email and evidence before payment'
         document_review_store.backfill_case(db, matched_case)
-        existing_context = {
-            **document_review_store.context(db, matched_case, prepared_email.id),
-            "case_number": matched_case.case_number,
-            "patient_name": matched_case.patient_name,
-            "patient_email": matched_case.patient_email,
-            "paypal_email": matched_case.paypal_email,
-            "verification_evidence": matched_case.verification_evidence,
-            "verification_issues": matched_case.verification_issues,
-            "review_report": matched_case.review_report,
-            "medical_category": matched_case.medical_category,
-            "hospital_name": matched_case.hospital_name,
-            "estimated_cost": str(matched_case.estimated_cost) if matched_case.estimated_cost else None,
-            "requested_amount": str(matched_case.requested_amount) if matched_case.requested_amount else None,
-            "urgency": matched_case.urgency,
-            "status": matched_case.status,
-            "overall_summary": matched_case.overall_summary,
-            "next_action": matched_case.next_action,
-            "pending_items": matched_case.pending_items,
-        }
+        existing_context = document_review_store.case_context(db, matched_case, prepared_email.id)
 
     # 7. Run AI triage & living summary analysis (via OpenRouter with safe fallback)
     ai_result = payload.ai_summary
