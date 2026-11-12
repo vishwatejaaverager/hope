@@ -427,7 +427,7 @@ def to_decimal_or_none(val: Any) -> Optional[Decimal]:
 def draft_review_email(analysis: dict[str, Any], case_number: str, *,
                        incoming_email: dict[str, str | None],
                        inspect_request: Callable[[dict[str, Any]], None] | None = None) -> str:
-    """Draft from finalized backend findings; no file data or URLs are supplied."""
+    """Draft from the latest email, current document findings, and outstanding checklist."""
     report = analysis['review_report']
     documents = [{
         'doc_type': item.get('document_type'),
@@ -436,14 +436,9 @@ def draft_review_email(analysis: dict[str, Any], case_number: str, *,
     } for item in report['document_checks']]
     outstanding = [item['label'] for item in report['document_statuses'].values()
                    if item['status'] != 'approved']
-    concerns = list(dict.fromkeys(flag['message'] for flag in report['red_flags']
-                                  if flag.get('origin') != 'computed'))
-    concerns.extend(flag for item in (analysis.get('verification_evidence') or [])
-                    if item.get('is_verified') is not True for flag in item.get('flags', [])
-                    if flag not in concerns and not any(flag in doc['red_flags'] for doc in documents))
     context = {'case_number': case_number, 'incoming_email': incoming_email,
                'document_analysis': documents,
-               'outstanding_documents': outstanding, 'open_concerns': concerns}
+               'outstanding_documents': outstanding}
     key = get_openrouter_api_key()
     if key and os.getenv('DISABLE_OPENROUTER_IN_TESTS') != '1':
         try:
@@ -476,7 +471,6 @@ def draft_review_email(analysis: dict[str, Any], case_number: str, *,
             lines.append(f'{label}: verified successfully.')
         else:
             lines.extend(f'- {flag}' for flag in item['red_flags'])
-    lines.extend(f'- {flag}' for flag in concerns if f'- {flag}' not in lines)
     if outstanding:
         lines.append('Please provide or clarify: ' + '; '.join(outstanding) + '.')
     return '\n'.join([*lines, '', 'Kind regards,', 'Hope Medical Assistance Team'])

@@ -388,3 +388,36 @@ def test_verified_documents_request_paypal_and_confirm_payout(client, db_session
 def test_estimate_is_not_an_explicit_assistance_request():
     assert ai_service.explicit_assistance_amount('The hospital estimate is $18,000.') is None
     assert ai_service.explicit_assistance_amount('The estimate is $18,000. We are requesting $12,000.') == '12000.00'
+
+
+def test_drafting_excludes_saved_findings_but_keeps_current_flags_and_checklist(monkeypatch):
+    import json
+
+    monkeypatch.delenv('DISABLE_OPENROUTER_IN_TESTS')
+    monkeypatch.setattr(ai_service, 'get_openrouter_api_key', lambda: 'test-key')
+    post = Mock(return_value=Mock(**{
+        'json.return_value': {'choices': [{'message': {'content': 'Please send a corrected estimate.'}}]}
+    }))
+    monkeypatch.setattr(ai_service.requests, 'post', post)
+    analysis = {
+        'verification_evidence': [{'is_verified': False, 'flags': ['Stored prescription concern']}],
+        'review_report': {
+            'red_flags': [{'message': 'Earlier case concern'}],
+            'document_checks': [{'document_type': 'cost_estimate', 'is_verified': False,
+                                 'flags': ['The printed total differs from the itemized charges.']}],
+            'document_statuses': {
+                'government_id': {'label': 'Patient ID', 'status': 'missing'},
+                'medical_record': {'label': 'Medical report', 'status': 'approved'},
+                'cost_estimate': {'label': 'Hospital estimate', 'status': 'needs_review'},
+            },
+        },
+    }
+    incoming = {'subject': 'Updated estimate', 'body': 'Please review the attached estimate.'}
+    ai_service.draft_review_email(analysis, 'TEST', incoming_email=incoming)
+    context = json.loads(post.call_args.kwargs['json']['messages'][1]['content'])
+    assert context == {
+        'case_number': 'TEST', 'incoming_email': incoming,
+        'document_analysis': [{'doc_type': 'cost_estimate', 'is_verified': False,
+                               'red_flags': ['The printed total differs from the itemized charges.']}],
+        'outstanding_documents': ['Patient ID', 'Hospital estimate'],
+    }
