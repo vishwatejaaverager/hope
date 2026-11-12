@@ -371,14 +371,7 @@ export function MedicalCasesPanel({
   emails: EmailRow[];
 }) {
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(cases[0]?.id ?? null);
-  const [disbursingId, setDisbursingId] = useState<string | null>(null);
   const [clearingCases, setClearingCases] = useState(false);
-  const [disburseResult, setDisburseResult] = useState<{
-    caseId: string;
-    ok: boolean;
-    message: string;
-  } | null>(null);
-
   const selectedCase = cases.find((c) => c.id === selectedCaseId) ?? cases[0] ?? null;
 
   async function handleClearAllCasesAndEmails() {
@@ -393,39 +386,6 @@ export function MedicalCasesPanel({
       }
     } finally {
       setClearingCases(false);
-    }
-  }
-
-  async function handleDisburse(c: CaseRow) {
-    setDisbursingId(c.id);
-    setDisburseResult(null);
-    try {
-      const res = await fetch(`/api/cases/${encodeURIComponent(c.id)}/disburse`, {
-        method: 'POST',
-
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setDisburseResult({
-          caseId: c.id,
-          ok: false,
-          message: data.detail || 'Failed to disburse payout via PayPal.',
-        });
-      } else {
-        setDisburseResult({
-          caseId: c.id,
-          ok: true,
-          message: data.message || "Payment status updated.",
-        });
-      }
-    } catch (err) {
-      setDisburseResult({
-        caseId: c.id,
-        ok: false,
-        message: err instanceof Error ? err.message : 'Network error during disbursement',
-      });
-    } finally {
-      setDisbursingId(null);
     }
   }
 
@@ -550,31 +510,21 @@ export function MedicalCasesPanel({
                   </p>
                 </div>
 
-                <button
-                  type="button"
-                  disabled={disbursingId === selectedCase.id || !['APPROVED', 'PAYOUT_PROCESSING'].includes(selectedCase.status)}
-                  onClick={() => handleDisburse(selectedCase)}
-                  className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white shadow-xs transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {disbursingId === selectedCase.id
-                    ? 'Updating payment…'
-                    : ['DISBURSED', 'PAID'].includes(selectedCase.status)
-                      ? '✓ Payout Disbursed'
-                      : selectedCase.status === 'PAYOUT_PROCESSING' ? 'Check PayPal payout' : 'Continue to PayPal payout'}
-                </button>
-              </div>
-
-              {disburseResult && disburseResult.caseId === selectedCase.id && (
-                <div
-                  className={`mt-3 rounded-lg border px-3 py-2 text-xs font-medium ${
-                    disburseResult.ok
-                      ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
-                      : 'border-red-200 bg-red-50 text-red-800'
-                  }`}
-                >
-                  {disburseResult.message}
+                <div className="rounded-lg bg-slate-100 px-4 py-2 text-xs font-semibold text-slate-800">
+                  <span className="block text-slate-500">Automatic payout</span>
+                  {['DISBURSED', 'PAID'].includes(selectedCase.status)
+                    ? 'Payment confirmed'
+                    : selectedCase.status === 'PAYOUT_PROCESSING'
+                      ? 'PayPal payout in progress'
+                      : selectedCase.nextAction === 'Request beneficiary PayPal email'
+                        ? 'Awaiting beneficiary PayPal email'
+                        : selectedCase.status === 'APPROVED'
+                          ? 'Approved for payout'
+                          : ['REJECTED', 'CLOSED'].includes(selectedCase.status)
+                            ? 'No payout scheduled'
+                            : 'Awaiting case review'}
                 </div>
-              )}
+              </div>
             </div>
 
             <div className="rounded-xl border border-indigo-200 bg-indigo-50/60 p-4">
