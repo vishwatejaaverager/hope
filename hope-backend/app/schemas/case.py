@@ -109,12 +109,12 @@ class CaseDisburseResponse(BaseModel):
     case_id: str
     case_number: str
     case_status: str
-    batch_id: str
+    batch_id: Optional[str] = None
     batch_status: str
     item_status: Optional[str] = None
-    amount: str
+    amount: Optional[str] = None
     currency: str = "USD"
-    recipient_email: str
+    recipient_email: Optional[str] = None
     paid: bool = False
     message: str
 

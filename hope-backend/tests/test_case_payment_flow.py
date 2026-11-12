@@ -514,3 +514,36 @@ def test_payout_rechecks_automated_approval_validity(db_session):
     assert case.approval_source is None
     assert 'validity check' in message
     assert not db_session.execute(select(Payout)).scalars().all()
+
+
+def test_dashboard_payout_requests_missing_paypal_email(client, db_session, monkeypatch):
+    case = make_case(db_session)
+    notify = Mock()
+    monkeypatch.setattr(case_workflow, 'notify_case_contact', notify)
+    response = client.post(f'/api/v1/cases/{case.id}/disburse', headers={'X-Webhook-Secret': TEST_SECRET}, json={})
+    assert response.status_code == 200
+    assert response.json()['batch_status'] == 'AWAITING_PAYPAL_EMAIL'
+    assert response.json()['paid'] is False
+    assert 'beneficiary’s PayPal account' in notify.call_args.args[2]
+    assert case.paypal_email is None
+    assert not db_session.execute(select(Payout)).scalars().all()
+
+
+def test_dashboard_payout_cannot_substitute_contact_and_estimate(client, db_session):
+    case = make_case(db_session)
+    response = client.post(f'/api/v1/cases/{case.id}/disburse', headers={'X-Webhook-Secret': TEST_SECRET},
+                           json={'recipient_email': case.patient_email, 'amount': 18000})
+    assert response.status_code == 400
+    assert case.paypal_email is None
+    assert not db_session.execute(select(Payout)).scalars().all()
+
+
+def test_dashboard_payout_queues_confirmed_details(client, db_session, monkeypatch):
+    case = make_case(db_session, paypal_email='beneficiary@example.com')
+    mock_paypal(monkeypatch)
+    response = client.post(f'/api/v1/cases/{case.id}/disburse', headers={'X-Webhook-Secret': TEST_SECRET}, json={})
+    assert response.status_code == 200
+    assert response.json()['paid'] is True
+    email = db_session.execute(select(OutgoingEmail)).scalar_one()
+    assert 'beneficiary@example.com' in email.body_plain
+    assert 'PayPal payout item ID: ITEM123' in email.body_plain

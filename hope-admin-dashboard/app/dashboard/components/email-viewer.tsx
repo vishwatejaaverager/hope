@@ -402,12 +402,7 @@ export function MedicalCasesPanel({
     try {
       const res = await fetch(`/api/cases/${encodeURIComponent(c.id)}/disburse`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          recipient_email: c.patientEmail !== '—' ? c.patientEmail : undefined,
-          amount: c.requestedAmount > 0 ? c.requestedAmount : c.estimatedCost > 0 ? c.estimatedCost : undefined,
-          beneficiary_name: c.patientName !== 'Unknown Patient' ? c.patientName : undefined,
-        }),
+
       });
       const data = await res.json();
       if (!res.ok) {
@@ -420,7 +415,7 @@ export function MedicalCasesPanel({
         setDisburseResult({
           caseId: c.id,
           ok: true,
-          message: data.message || `Disbursed $${data.amount} to ${data.recipient_email} (Batch: ${data.batch_id})`,
+          message: data.message || "Payment status updated.",
         });
       }
     } catch (err) {
@@ -557,15 +552,15 @@ export function MedicalCasesPanel({
 
                 <button
                   type="button"
-                  disabled={disbursingId === selectedCase.id || selectedCase.status === 'disbursed'}
+                  disabled={disbursingId === selectedCase.id || !['APPROVED', 'PAYOUT_PROCESSING'].includes(selectedCase.status)}
                   onClick={() => handleDisburse(selectedCase)}
                   className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white shadow-xs transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {disbursingId === selectedCase.id
-                    ? 'Sending PayPal Payout...'
-                    : selectedCase.status === 'disbursed'
+                    ? 'Updating payment…'
+                    : ['DISBURSED', 'PAID'].includes(selectedCase.status)
                       ? '✓ Payout Disbursed'
-                      : `Send Payout ($${(selectedCase.requestedAmount || selectedCase.estimatedCost || 0).toLocaleString()})`}
+                      : selectedCase.status === 'PAYOUT_PROCESSING' ? 'Check PayPal payout' : 'Continue to PayPal payout'}
                 </button>
               </div>
 

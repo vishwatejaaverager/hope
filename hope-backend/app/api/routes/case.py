@@ -478,20 +478,19 @@ def disburse_case_payout(
 
     if case_row.status not in {'approved', 'payout_processing', 'disbursed', 'paid'}:
         raise HTTPException(status_code=409, detail="Only approved cases can receive payouts.")
-    existing = db.execute(select(Payout).where(Payout.case_id == case_row.id)).scalar_one_or_none()
-    if payload and existing is None:
-        if payload.recipient_email:
-            email = case_workflow.extract_paypal_email(f"PayPal: {payload.recipient_email}")
-            if not email:
-                raise HTTPException(status_code=400, detail="A valid beneficiary PayPal email is required.")
-            case_row.paypal_email = email
-        if payload.amount is not None:
-            case_row.requested_amount = payload.amount
-    message = case_workflow.process_approved_case(db, case_row)
+    if payload and (payload.recipient_email is not None or payload.amount is not None):
+        raise HTTPException(status_code=400, detail="Payouts use the recorded assistance amount and confirmed beneficiary PayPal email.")
+    message = case_workflow.process_approved_case(db, case_row, notify_on_success=True)
     db.commit()
     payout = db.execute(select(Payout).where(Payout.case_id == case_row.id)).scalar_one_or_none()
     if payout is None:
-        raise HTTPException(status_code=400, detail=message)
+        if case_row.next_action == 'Request beneficiary PayPal email' and case_row.patient_email:
+            case_workflow.notify_case_contact(db, case_row, message)
+            return CaseDisburseResponse(
+                case_id=str(case_row.id), case_number=case_row.case_number, case_status=case_row.status,
+                batch_status='AWAITING_PAYPAL_EMAIL', message='PayPal email request queued for the applicant. No payment was sent.',
+            )
+        raise HTTPException(status_code=400, detail=message or "Payout requirements are incomplete.")
     if payout.batch_status == 'REQUESTED':
         raise HTTPException(status_code=502, detail=message)
     return CaseDisburseResponse(

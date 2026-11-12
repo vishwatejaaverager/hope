@@ -1,19 +1,16 @@
+import { cookies } from "next/headers";
 import { NextResponse } from 'next/server';
 import { getBackendUrl } from '@/lib/hope-api';
 
 export async function POST(
-  request: Request,
+  _request: Request,
   context: { params: Promise<{ caseId: string }> },
 ) {
   const { caseId } = await context.params;
   const backendUrl = getBackendUrl();
-  const webhookSecret = process.env.EMAIL_WEBHOOK_SECRET || 'hope@0926';
-
-  let bodyJson: Record<string, unknown> = {};
-  try {
-    bodyJson = await request.json();
-  } catch {
-    bodyJson = {};
+  const session = (await cookies()).get("hope_admin_session")?.value;
+  if (!session) {
+    return NextResponse.json({ detail: "Sign in to manage payouts." }, { status: 401 });
   }
 
   try {
@@ -21,9 +18,9 @@ export async function POST(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-Webhook-Secret': webhookSecret,
+        Authorization: `Bearer ${session}`,
       },
-      body: JSON.stringify(bodyJson),
+      body: "{}",
       cache: 'no-store',
     });
 

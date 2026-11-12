@@ -52,6 +52,7 @@ def process_approved_case(db: Session, case: Case, *, notify_on_success: bool = 
     db.flush()
     db.execute(select(Case).where(Case.id == case.id).with_for_update()).scalar_one()
     payout = db.execute(select(Payout).where(Payout.case_id == case.id)).scalar_one_or_none()
+    already_disbursed = case.status in {'disbursed', 'paid'}
     if payout is None:
         if case.status in {'disbursed', 'paid'}:
             return 'This case is already marked as paid. Our team will review its existing payment record before taking any further action.'
@@ -139,7 +140,7 @@ def process_approved_case(db: Session, case: Case, *, notify_on_success: bool = 
             message += f'\nPayPal transaction ID: {payout.paypal_transaction_id}'
         if payout.paypal_item_id:
             message += f'\nPayPal payout item ID: {payout.paypal_item_id}'
-        if notify_on_success and case.patient_email:
+        if notify_on_success and not already_disbursed and case.patient_email:
             success_email = _queue_case_contact(db, case, message)
     elif payout.item_status in {'FAILED', 'RETURNED', 'BLOCKED', 'REFUNDED', 'REVERSED', 'UNCLAIMED'} or payout.batch_status in {'DENIED', 'CANCELED'}:
         case.status = 'payout_processing'
