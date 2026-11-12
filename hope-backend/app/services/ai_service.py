@@ -497,7 +497,7 @@ def draft_review_email(analysis: dict[str, Any], case_number: str, *,
     return '\n'.join([*lines, '', 'Kind regards,', 'Hope Medical Assistance Team'])
 
 
-DOCUMENT_VERIFICATION_PROMPT = """Check the attached document and identify potential red flags that affect its genuineness, reliability, or suitability for this request. Cite what you actually observed and explain why it matters. Do not infer forgery from visual style, guess missing details, or claim a QR code was checked unless it was decoded and verified. Compare dates, names, and amounts with the available evidence when relevant. An outdated document is not necessarily inauthentic. You have no access to external registries or databases. Never claim a registration number, issuer, or QR destination was checked against one. The sender can be different from the patient; compare only names explicitly identified as the patient.
+DOCUMENT_VERIFICATION_PROMPT = """Check the attached document and identify potential red flags that affect its genuineness, reliability, or suitability for this request. Cite what you actually observed and explain why it matters. Do not infer forgery from visual style, guess missing details, or claim a QR code was checked unless it was decoded and verified. Compare dates, names, and amounts with the available evidence when relevant. An outdated document is not necessarily inauthentic.
 
 Return only JSON with exactly these fields:
 {"is_verified": false, "red_flags": "Explanation of the observed issues", "doc_type": "medical_record"}
