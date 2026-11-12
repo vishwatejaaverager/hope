@@ -261,6 +261,7 @@ def analyze_incoming_email(
     existing_case_context: Optional[dict[str, Any]] = None,
     *,
     inspect_request: Callable[[dict[str, Any]], None] | None = None,
+    document_prompt: str | None = None,
 ) -> dict[str, Any]:
     """Analyze an incoming email + attachment images/docs using OpenRouter free Vision models."""
     fallback = _heuristic_fallback_analysis(
@@ -289,10 +290,11 @@ def analyze_incoming_email(
     if attachment_metadata:
         requested = (existing_case_context or {}).get('requested_amount') or explicit_assistance_amount(body_plain)
         checks, model = _review_documents(attachment_metadata, body_plain, existing_case_context,
-                                          models_to_try, api_key, inspect_request)
+                                          models_to_try, api_key, inspect_request, document_prompt)
         if not checks:
             return _analysis_failure(sender, subject, 'all_models_failed')
-        return {**fallback, 'document_checks': checks, 'red_flags': [],
+        return {**fallback, 'patient_name': (existing_case_context or {}).get('patient_name'),
+                'document_checks': checks, 'red_flags': [],
                 'review_complete': len(checks) == len(attachment_metadata) and all(item['is_verified'] for item in checks),
                 'requested_amount': requested,
                 'review_decision': 'approve' if requested else 'further_review',
@@ -476,7 +478,7 @@ def draft_review_email(analysis: dict[str, Any], case_number: str, *,
     return '\n'.join([*lines, '', 'Kind regards,', 'Hope Medical Assistance Team'])
 
 
-DOCUMENT_VERIFICATION_PROMPT = """Check the attached document and identify potential red flags that affect its genuineness, reliability, or suitability for this request. Cite what you actually observed and explain why it matters. Do not infer forgery from visual style, guess missing details, or claim a QR code was checked unless it was decoded and verified. Compare dates, names, and amounts with the available evidence when relevant. An outdated document is not necessarily inauthentic.
+DOCUMENT_VERIFICATION_PROMPT = """Check the attached document and identify potential red flags that affect its genuineness, reliability, or suitability for this request. Cite what you actually observed and explain why it matters. Do not infer forgery from visual style, guess missing details, or claim a QR code was checked unless it was decoded and verified. Compare dates, names, and amounts with the available evidence when relevant. An outdated document is not necessarily inauthentic. You have no access to external registries or databases. Never claim a registration number, issuer, or QR destination was checked against one. The sender can be different from the patient; compare only names explicitly identified as the patient.
 
 Return only JSON with exactly these fields:
 {"is_verified": false, "red_flags": "Explanation of the observed issues", "doc_type": "medical_record"}
@@ -502,7 +504,7 @@ def parse_document_verdict(value: Any) -> dict[str, Any]:
     return {'doc_type': kind, 'is_verified': verified, 'red_flags': flags}
 
 
-def _review_documents(attachments, body, case_context, models, key, inspect_request):
+def _review_documents(attachments, body, case_context, models, key, inspect_request, document_prompt=None):
     checks = []
     model_used = None
     prior = case_context or {}
@@ -523,7 +525,7 @@ def _review_documents(attachments, body, case_context, models, key, inspect_requ
             content.append({'type': 'image_url', 'image_url': {'url': image}})
         for model in models:
             payload = {'model': model, 'messages': [
-                {'role': 'system', 'content': DOCUMENT_VERIFICATION_PROMPT},
+                {'role': 'system', 'content': document_prompt if document_prompt is not None else DOCUMENT_VERIFICATION_PROMPT},
                 {'role': 'user', 'content': content}],
                 'response_format': {'type': 'json_object'}, 'max_tokens': 1200}
             if model.startswith('google/gemini-3'):

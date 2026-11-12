@@ -10,8 +10,8 @@ import requests
 import streamlit as st
 
 from app.services.ai_service import (DEFAULT_VISION_MODEL, OPENROUTER_URL, get_openrouter_api_key,
-                                    draft_review_email, DOCUMENT_VERIFICATION_PROMPT, parse_document_verdict)
-from app.services.case_review import REQUIRED_DOCUMENTS
+                                    draft_review_email, DOCUMENT_VERIFICATION_PROMPT, analyze_incoming_email)
+from app.services.approval_policy import constrain_email_analysis
 
 st.set_page_config(page_title="Hope review tester", layout="wide")
 st.title("Hope review tester")
@@ -79,8 +79,31 @@ with chat:
                             part["image_url"]["url"] = f"[Uploaded image bytes omitted: {url.split(',')[0]}]"
             st.session_state.requests.append(copy)
 
-        if mode == "Email flow" and len(attachments) != 1:
-            st.session_state.turns.append(("assistant", "Attach one document per message in Email flow so its verdict is unambiguous."))
+        if mode == "Email flow":
+            case = st.session_state.get("email_case", {})
+            sender, subject = "test@example.invalid", "Local email review"
+            with st.spinner("Reviewing documents and drafting the reply…"):
+                result = analyze_incoming_email(sender, subject, turn.text, attachments, case,
+                                                document_prompt=prompt, inspect_request=inspect)
+                if result.get("analysis_status") == "completed":
+                    if case.get("requested_amount") is not None:
+                        result["requested_amount"] = case["requested_amount"]
+                    result = constrain_email_analysis(
+                        result, sender, subject, turn.text, attachments,
+                        existing_evidence=case.get("verification_evidence"),
+                        existing_issues=case.get("verification_issues"),
+                        existing_report=case.get("review_report"),
+                    )
+                    st.session_state.email_case = {key: result.get(key) for key in (
+                        "patient_name", "hospital_name", "requested_amount", "verification_evidence",
+                        "verification_issues", "review_report", "overall_summary", "status",
+                    )}
+                    result["auto_reply_body"] = draft_review_email(
+                        result, "LOCAL-TEST", incoming_email={"subject": subject, "body": turn.text},
+                        inspect_request=inspect,
+                    )
+            st.session_state.result = result
+            st.session_state.turns.append(("assistant", result.get("auto_reply_body") or "No draft returned."))
             st.rerun()
 
         context = json.dumps(st.session_state.case[-8:])
@@ -112,39 +135,6 @@ with chat:
                 st.session_state.case.append({"message": display, "verdict": verdict})
             except (requests.RequestException, ValueError, KeyError, IndexError, TypeError):
                 verdict = {"is_verified": False, "red_flags": ["The model request failed. Try again."]}
-        if mode == "Email flow":
-            try:
-                normalized = parse_document_verdict(verdict)
-            except ValueError:
-                st.session_state.result = verdict
-                st.session_state.turns.append(("assistant", "Your prompt must return JSON with doc_type, is_verified, and red_flags. No email was drafted."))
-                st.rerun()
-            kind, verified, flags = normalized["doc_type"], normalized["is_verified"], normalized["red_flags"]
-            case = st.session_state.get("email_case", {})
-            case[kind] = {"document_type": kind, "is_verified": verified, "flags": flags}
-            st.session_state.email_case = case
-            report = {
-                "document_checks": [case[kind]],
-                "document_statuses": {
-                    doc_type: {"label": label, "status": (
-                        "approved" if case[doc_type]["is_verified"] else "needs_review"
-                    ) if doc_type in case else "missing"}
-                    for doc_type, label in REQUIRED_DOCUMENTS.items()
-                },
-                "red_flags": [
-                    {"message": flag} for doc_type, doc in case.items() if doc_type != kind for flag in doc["flags"]
-                ],
-            }
-            with st.spinner("Drafting the email…"):
-                draft = draft_review_email(
-                    {"review_report": report}, "LOCAL-TEST",
-                    incoming_email={"subject": "Local email review", "body": turn.text},
-                    inspect_request=inspect,
-                )
-            st.session_state.result = {"document_analysis": verdict, "review_report": report}
-            st.session_state.turns.append(("assistant", draft))
-            st.rerun()
-
         st.session_state.result = verdict
         st.session_state.turns.append(("assistant", verdict))
         st.rerun()
